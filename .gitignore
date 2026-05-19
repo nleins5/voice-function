@@ -11,3 +11,4 @@ ui/dist/
 
 /generated/prisma
 .vercel
+.env*.local

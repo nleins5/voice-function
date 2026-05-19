@@ -3,6 +3,14 @@
   "builds": [
     { "src": "ui/package.json", "use": "@vercel/static-build", "config": { "distDir": "dist" } }
   ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Permissions-Policy", "value": "microphone=(self)" }
+      ]
+    }
+  ],
   "routes": [
     {
       "src": "/v1/(.*)",
