@@ -92,6 +92,8 @@ class RouterService:
         if provider.key == "freetheai":
             # FreeTheAI doesn't require API key
             return os.getenv(provider.api_key_env) or "free"
+        if provider.key == "groq":
+            return settings.groq_api_key or "not_provided"
         return os.getenv(provider.api_key_env) or "not_provided"
 
     def _get_base_url(self, provider: Provider) -> str:
@@ -150,7 +152,10 @@ class RouterService:
         """Check if a provider has a valid API key configured."""
         if provider.key in ("ollama", "freetheai"):
             return True  # These don't require real keys
-        key = os.getenv(provider.api_key_env)
+        if provider.key == "groq":
+            key = settings.groq_api_key
+        else:
+            key = os.getenv(provider.api_key_env)
         if not key or key == "not_provided":
             return False
         # Detect obvious placeholder keys
