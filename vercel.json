@@ -1,7 +1,8 @@
 {
   "buildCommand": "cd ui && npm install && npm run build",
   "outputDirectory": "ui/dist",
-  "framework": "vite",
+  "framework": null,
+  "installCommand": "cd ui && npm install",
   "headers": [
     {
       "source": "/(.*)",
