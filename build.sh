@@ -6,7 +6,6 @@ echo "Installing Python dependencies..."
 pip install -r requirements.txt
 
 echo "Building React UI..."
-cd ui
 npm install
-npm run build
+npm run build:ui
 echo "Build complete!"
