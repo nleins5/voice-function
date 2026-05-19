@@ -17,7 +17,8 @@
       "dest": "https://free-ai-gateway.onrender.com/v1/$1",
       "headers": {
         "X-Gateway-Key": "$GATEWAY_SECRET"
-      }
+      },
+      "continue": false
     },
     {
       "src": "/health",
