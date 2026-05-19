@@ -31,8 +31,9 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Skip DB initialization in serverless environments
-    is_serverless = os.getenv('VERCEL') == '1'
+    # Skip DB initialization in serverless or database-less environments
+    disable_db = os.getenv('DISABLE_DATABASE', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    is_serverless = os.getenv('VERCEL') == '1' or disable_db
 
     if not is_serverless:
         # Initialize Database only in local/dev
