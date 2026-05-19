@@ -2,7 +2,7 @@
   "buildCommand": "cd ui && npm install && npm run build",
   "outputDirectory": "ui/dist",
   "framework": null,
-  "installCommand": "cd ui && npm install",
+  "installCommand": "echo 'skip root install'",
   "headers": [
     {
       "source": "/(.*)",
@@ -12,9 +12,7 @@
     }
   ],
   "rewrites": [
-    { "source": "/v1/:path*", "destination": "https://free-ai-gateway.onrender.com/v1/:path*" },
-    { "source": "/health", "destination": "https://free-ai-gateway.onrender.com/health" },
-    { "source": "/docs", "destination": "https://free-ai-gateway.onrender.com/docs" },
-    { "source": "/openapi.json", "destination": "https://free-ai-gateway.onrender.com/openapi.json" }
+    { "source": "/v1/:path*", "destination": "https://voice-function.onrender.com/v1/:path*" },
+    { "source": "/health", "destination": "https://voice-function.onrender.com/health" }
   ]
 }
