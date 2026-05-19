@@ -1,7 +1,9 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from openai import AsyncOpenAI
 import os
+import sys
 import tempfile
+import subprocess
 import aiofiles
 import httpx
 from app.config import settings
@@ -16,13 +18,55 @@ def _looks_invalid_key(value: str | None) -> bool:
     return any(marker in lowered for marker in ("invalid", "test_key", "your_", "paste_", "replace_"))
 
 
+# Whisper hallucination patterns (silent/noise audio produces these)
+WHISPER_HALLUCINATIONS = {
+    "1", "1.", ".", "..", "...", "…",
+    "Thank you.", "Thanks for watching.",
+    "Thank you for watching.", "Subscribe to my channel.",
+    "Đây là câu nói tiếng Việt.",
+    "Cảm ơn các bạn đã xem.",
+    "Hẹn gặp lại.",
+    "you", "You",
+}
+
+
+def _is_hallucination(text: str, prompt: str) -> bool:
+    """Check if transcription is a known Whisper hallucination."""
+    if not text:
+        return True
+    stripped = text.strip().rstrip(".")
+    if stripped in WHISPER_HALLUCINATIONS or text.strip() in WHISPER_HALLUCINATIONS:
+        return True
+    if text.strip() == prompt.strip():
+        return True
+    # Extremely short single-char or just punctuation
+    if len(stripped) <= 1:
+        return True
+    return False
+
+
+def _convert_to_wav(input_path: str) -> str:
+    """Convert audio to WAV using ffmpeg if available, for better Whisper compatibility."""
+    wav_path = input_path.rsplit(".", 1)[0] + ".wav"
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", input_path, "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", wav_path],
+            capture_output=True, timeout=15
+        )
+        if result.returncode == 0 and os.path.exists(wav_path):
+            return wav_path
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass  # ffmpeg not installed or timed out
+    return ""
+
+
 async def _transcribe_with_cloudflare(audio_bytes: bytes) -> str:
     account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
     api_key = os.getenv("CLOUDFLARE_API_KEY")
     if _looks_invalid_key(account_id) or _looks_invalid_key(api_key):
         raise HTTPException(
             status_code=500,
-            detail="No valid speech-to-text provider configured. Set GROQ_API_KEY or CLOUDFLARE_API_KEY/CLOUDFLARE_ACCOUNT_ID.",
+            detail="No valid speech-to-text provider configured. Set NVIDIA_API_KEY, GROQ_API_KEY or CLOUDFLARE_API_KEY.",
         )
 
     url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/openai/whisper"
@@ -43,25 +87,75 @@ async def _transcribe_with_cloudflare(audio_bytes: bytes) -> str:
     result = payload.get("result") or {}
     return (result.get("text") or payload.get("text") or "").strip()
 
+
+async def _transcribe_with_nvidia(temp_path: str, language: str, prompt: str) -> str:
+    nvidia_api_key = settings.nvidia_api_key
+    if _looks_invalid_key(nvidia_api_key):
+        return ""
+
+    try:
+        client = AsyncOpenAI(api_key=nvidia_api_key, base_url="https://integrate.api.nvidia.com/v1")
+        with open(temp_path, "rb") as audio_file:
+            transcription = await client.audio.transcriptions.create(
+                file=audio_file,
+                model="openai/whisper-large-v3",
+                language=language,
+                temperature=0.0,
+                prompt=prompt,
+                response_format="json"
+            )
+        return transcription.text.strip()
+    except Exception as e:
+        print(f"[STT] Nvidia error: {e}", file=sys.stderr)
+        return ""
+
+
+async def _transcribe_with_groq(temp_path: str, language: str, prompt: str) -> str:
+    groq_api_key = settings.groq_api_key
+    if _looks_invalid_key(groq_api_key):
+        return ""
+
+    try:
+        client = AsyncOpenAI(api_key=groq_api_key, base_url="https://api.groq.com/openai/v1")
+        with open(temp_path, "rb") as audio_file:
+            transcription = await client.audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-large-v3",
+                language=language,
+                temperature=0.0,
+                prompt=prompt,
+                response_format="json"
+            )
+        return transcription.text.strip()
+    except Exception as e:
+        print(f"[STT] Groq error: {e}", file=sys.stderr)
+        return ""
+
+
 @router.post("/transcriptions")
 async def create_transcription(
     file: UploadFile = File(...),
     language: str = Form("vi"),
 ):
-    groq_api_key = settings.groq_api_key
-
-    # Using tempfile and aiofiles to avoid blocking the event loop
     temp_path = None
+    wav_path = None
     try:
         suffix = os.path.splitext(file.filename)[1] if file.filename else ".webm"
-        # Create a named temporary file and get its path, then close it immediately
         fd, temp_path = tempfile.mkstemp(suffix=suffix)
         os.close(fd)
 
+        file_size = 0
         async with aiofiles.open(temp_path, "wb") as temp_file:
-            # Read in chunks to avoid loading large files into memory
             while chunk := await file.read(8192):
+                file_size += len(chunk)
                 await temp_file.write(chunk)
+
+        print(f"[STT] Received audio: {file.filename}, size={file_size}, suffix={suffix}", file=sys.stderr)
+
+        # Reject extremely small files (likely empty/silence)
+        if file_size < 1000:
+            print(f"[STT] File too small ({file_size} bytes), likely empty recording", file=sys.stderr)
+            return {"text": "", "error": "Audio quá ngắn hoặc trống"}
 
         normalized_language = "en" if language.lower().startswith("en") else "vi"
         transcription_prompt = (
@@ -70,53 +164,68 @@ async def create_transcription(
             else "Đây là câu nói tiếng Việt."
         )
 
+        # Try converting to WAV for better compatibility (especially Safari mp4)
+        wav_path = _convert_to_wav(temp_path)
+        primary_path = wav_path if wav_path else temp_path
+
         text = ""
-        if not _looks_invalid_key(groq_api_key):
-            try:
-                client = AsyncOpenAI(api_key=groq_api_key, base_url="https://api.groq.com/openai/v1")
-                with open(temp_path, "rb") as audio_file:
-                    transcription = await client.audio.transcriptions.create(
-                        file=audio_file,
-                        model="whisper-large-v3",
-                        language=normalized_language,
-                        temperature=0.0,
-                        prompt=transcription_prompt,
-                        response_format="json"
-                    )
-                text = transcription.text.strip()
-            except Exception as e:
-                print(f"Groq STT Error: {e}")
+        provider_used = "none"
+
+        # 1. Try Groq first (faster, better Safari mp4 support)
+        text = await _transcribe_with_groq(primary_path, normalized_language, transcription_prompt)
+        if text and not _is_hallucination(text, transcription_prompt):
+            provider_used = "groq"
+        else:
+            text = ""
+
+        # 2. Fallback to NVIDIA
+        if not text:
+            text = await _transcribe_with_nvidia(primary_path, normalized_language, transcription_prompt)
+            if text and not _is_hallucination(text, transcription_prompt):
+                provider_used = "nvidia"
+            else:
                 text = ""
 
+        # 3. Fallback to Cloudflare
         if not text:
             try:
-                async with aiofiles.open(temp_path, "rb") as audio_file:
+                async with aiofiles.open(primary_path, "rb") as audio_file:
                     audio_bytes = await audio_file.read()
-                text = await _transcribe_with_cloudflare(audio_bytes)
+                raw = await _transcribe_with_cloudflare(audio_bytes)
+                if raw and not _is_hallucination(raw, transcription_prompt):
+                    text = raw
+                    provider_used = "cloudflare"
             except HTTPException as e:
                 if e.status_code == 500 and "No valid speech-to-text provider" in e.detail:
-                    # If Cloudflare is not configured, just accept the empty text from Groq
-                    # rather than crashing the whole request.
                     pass
                 else:
                     raise
 
-        # Lọc bỏ các kết quả bịa đặt thường gặp của Whisper
-        if not text or text in ["1", "1.", "Đây là câu nói tiếng Việt.", transcription_prompt]:
-            return {"text": ""}
+        print(f"[STT] Result: provider={provider_used}, text_len={len(text)}, text={text[:80]}...", file=sys.stderr)
+
+        if not text:
+            return {"text": "", "error": "Không nhận diện được giọng nói. Hãy nói gần micro hơn."}
 
         return {"text": text}
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[STT] Unexpected error: {e}", file=sys.stderr)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
+        if wav_path and os.path.exists(wav_path):
+            os.remove(wav_path)
+
 
 @router.websocket("/stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     groq_api_key = settings.groq_api_key
-    if not groq_api_key:
+    nvidia_api_key = settings.nvidia_api_key
+    
+    if not groq_api_key and not nvidia_api_key:
         await websocket.close(code=1011)
         return
 
@@ -125,11 +234,10 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_bytes()
             temp_path = None
             try:
-                # Detect audio format from magic bytes
                 suffix = ".webm"
-                if data[:4] == b'\x1aE\xdf\xa3':  # webm
+                if data[:4] == b'\x1aE\xdf\xa3':
                     suffix = ".webm"
-                elif b'ftyp' in data[:32]:  # mp4
+                elif b'ftyp' in data[:32]:
                     suffix = ".mp4"
 
                 fd, temp_path = tempfile.mkstemp(suffix=suffix)
@@ -138,40 +246,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 async with aiofiles.open(temp_path, "wb") as temp_file:
                     await temp_file.write(data)
 
-                # Call Groq transcription API
-                import httpx
-                async with httpx.AsyncClient() as client:
-                    with open(temp_path, "rb") as audio_file:
-                        mime_type = "audio/webm" if suffix == ".webm" else "audio/mp4"
-                        files = {"file": (temp_path, audio_file, mime_type)}
-                        data_payload = {
-                            "model": "whisper-large-v3",
-                            "language": "vi",
-                            "temperature": "0.0",
-                            "prompt": "Đây là câu nói tiếng Việt."
-                        }
+                text = ""
+                prompt = "Đây là câu nói tiếng Việt."
 
-                        response = await client.post(
-                            "https://api.groq.com/openai/v1/audio/transcriptions",
-                            headers={"Authorization": f"Bearer {groq_api_key}"},
-                            files=files,
-                            data=data_payload,
-                            timeout=30.0
-                        )
+                if not _looks_invalid_key(groq_api_key):
+                    text = await _transcribe_with_groq(temp_path, "vi", prompt)
 
-                    if response.status_code == 200:
-                        result = response.json()
-                        text = result.get("text", "").strip()
-                        # Lọc bỏ các kết quả bịa đặt thường gặp của Whisper
-                        if text and text not in ["1", "1.", "Đây là câu nói tiếng Việt."]:
-                            await websocket.send_json({"text": text})
-                    else:
-                        await websocket.send_json({"error": f"Groq API error {response.status_code}: {response.text}"})
+                if not text and not _looks_invalid_key(nvidia_api_key):
+                    text = await _transcribe_with_nvidia(temp_path, "vi", prompt)
+
+                if text and not _is_hallucination(text, prompt):
+                    await websocket.send_json({"text": text})
             except Exception as e:
-                print(f"WebSocket STT Error: {e}")
+                print(f"[WS-STT] Error: {e}", file=sys.stderr)
                 await websocket.send_json({"error": str(e)})
             finally:
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
     except WebSocketDisconnect:
-        print("Client disconnected from audio stream")
+        print("Client disconnected from audio stream", file=sys.stderr)

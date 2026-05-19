@@ -12,3 +12,16 @@ ui/dist/
 /generated/prisma
 .vercel
 .env*.local
+
+logs.txt
+silent.wav
+speech.aiff
+test.wav
+test_db.py
+test_fastapi_exception.py
+test_groq.py
+test_real_stt.py
+test_stt.py
+update_env.sh
+*.wav
+*.aiff

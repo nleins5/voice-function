@@ -34,6 +34,7 @@ export default function VoiceCoach() {
     const [isScoring, setIsScoring] = useState(false);
     const [status, setStatus] = useState('');
     const [audioLevel, setAudioLevel] = useState(0);
+    const [recordingTime, setRecordingTime] = useState(0);
     const [micPermission, setMicPermission] = useState('unknown');
     const [userId] = useState(() => {
         let id = localStorage.getItem('voice_coach_user_id');
@@ -49,6 +50,8 @@ export default function VoiceCoach() {
     const streamRef = useRef(null);
     const audioContextRef = useRef(null);
     const animationFrameRef = useRef(null);
+    const timerRef = useRef(null);
+    const lastAudioUrlRef = useRef(null);
 
     const activeMode = MODES[mode];
 
@@ -74,6 +77,10 @@ export default function VoiceCoach() {
     }, []);
 
     const cleanupRecording = useCallback((resetLevel = true) => {
+        if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+        }
         if (animationFrameRef.current) {
             cancelAnimationFrame(animationFrameRef.current);
             animationFrameRef.current = null;
@@ -86,7 +93,10 @@ export default function VoiceCoach() {
             streamRef.current.getTracks().forEach((track) => track.stop());
             streamRef.current = null;
         }
-        if (resetLevel) setAudioLevel(0);
+        if (resetLevel) {
+            setAudioLevel(0);
+            setRecordingTime(0);
+        }
     }, []);
 
     useEffect(() => {
@@ -134,7 +144,7 @@ export default function VoiceCoach() {
 
     const transcribeAudio = async (audioBlob, mimeType = audioBlob.type || 'audio/mp4') => {
         setIsTranscribing(true);
-        setStatus('Đang chuyển giọng nói thành văn bản...');
+        setStatus(`Đang chuyển giọng nói thành văn bản... (${(audioBlob.size / 1024).toFixed(0)} KB)`);
         try {
             const formData = new FormData();
             formData.append('file', audioBlob, getAudioFilename(audioBlob, mimeType));
@@ -147,13 +157,15 @@ export default function VoiceCoach() {
 
             if (!response.ok) {
                 const error = await response.json().catch(() => ({}));
-                throw new Error(error.detail || error.error || response.statusText);
+                throw new Error(error.detail || error.error || `Server error ${response.status}`);
             }
 
             const data = await response.json();
             const text = data.text?.trim() || '';
+
             if (!text) {
-                setStatus('Chưa nghe rõ. Hãy thử nói gần micro hơn.');
+                const hint = data.error || 'Chưa nghe rõ. Hãy nói to hơn và gần micro hơn (ít nhất 3 giây).';
+                setStatus(hint);
                 return;
             }
 
@@ -161,7 +173,14 @@ export default function VoiceCoach() {
             setStatus('Đã có transcript. Đang gửi AI chấm điểm...');
             await submitForScoring(text);
         } catch (error) {
-            setStatus(`Lỗi ghi âm: ${error.message}`);
+            const msg = error.message || 'Unknown error';
+            if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+                setStatus('Lỗi mạng — kiểm tra kết nối internet và thử lại.');
+            } else if (msg.includes('Timeout') || msg.includes('timeout')) {
+                setStatus('Server xử lý quá lâu. Hãy thử ghi âm ngắn hơn.');
+            } else {
+                setStatus(`Lỗi ghi âm: ${msg}`);
+            }
         } finally {
             setIsTranscribing(false);
         }
@@ -169,7 +188,7 @@ export default function VoiceCoach() {
 
     const startRecording = async () => {
         if (!window.isSecureContext) {
-            setStatus('Microphone cần HTTPS hoặc localhost. Hãy mở bằng http://localhost:8000/playground hoặc HTTPS.');
+            setStatus('Microphone cần HTTPS hoặc localhost. Hãy mở bằng HTTPS.');
             return;
         }
         if (!navigator.mediaDevices?.getUserMedia) {
@@ -182,20 +201,32 @@ export default function VoiceCoach() {
         }
 
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Safari does NOT support sampleRate constraint — omit it
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+            });
             streamRef.current = stream;
+            setMicPermission('granted');
 
+            // Pick best supported MIME type
             let options = undefined;
-            if (MediaRecorder.isTypeSupported('audio/webm')) {
-                options = { mimeType: 'audio/webm' };
-            } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
-                options = { mimeType: 'audio/mp4' };
+            const mimePreference = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+            for (const mime of mimePreference) {
+                if (MediaRecorder.isTypeSupported(mime)) {
+                    options = { mimeType: mime };
+                    break;
+                }
             }
 
             const recorder = new MediaRecorder(stream, options);
             mediaRecorderRef.current = recorder;
             audioChunksRef.current = [];
 
+            // Setup audio level visualization
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             audioContextRef.current = audioContext;
             const source = audioContext.createMediaStreamSource(stream);
@@ -218,26 +249,50 @@ export default function VoiceCoach() {
             recorder.onstop = () => {
                 const mimeType = recorder.mimeType || options?.mimeType || 'audio/mp4';
                 const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+                const chunkCount = audioChunksRef.current.length;
                 audioChunksRef.current = [];
                 cleanupRecording();
-                if (audioBlob.size > 0) transcribeAudio(audioBlob, mimeType);
+
+                // Save audio URL for playback debugging
+                if (lastAudioUrlRef.current) URL.revokeObjectURL(lastAudioUrlRef.current);
+                lastAudioUrlRef.current = URL.createObjectURL(audioBlob);
+
+                if (audioBlob.size < 500) {
+                    setStatus(`Audio trống (${audioBlob.size} bytes). Mic có thể bị tắt tiếng.`);
+                    return;
+                }
+                setStatus(`Đã ghi ${(audioBlob.size/1024).toFixed(0)}KB (${chunkCount} chunks, ${mimeType}). Đang gửi...`);
+                transcribeAudio(audioBlob, mimeType);
             };
 
-            recorder.start(100);
+            // Safari: don't use timeslice (causes empty chunks)
+            const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+            if (isSafari) {
+                recorder.start();
+            } else {
+                recorder.start(250);
+            }
             setIsRecording(true);
+            setRecordingTime(0);
             setFeedback(initialFeedback);
-            setStatus('Đang ghi âm...');
+            setTranscript('');
+            setStatus(`Đang ghi âm... (${options?.mimeType || 'default'}) — Nói to và rõ, ít nhất 3 giây`);
             updateLevel();
+
+            // Timer to show recording duration
+            timerRef.current = setInterval(() => {
+                setRecordingTime((prev) => prev + 1);
+            }, 1000);
         } catch (error) {
             cleanupRecording();
             setIsRecording(false);
             if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
                 setMicPermission('denied');
-                setStatus('Microphone đang bị chặn. Hãy bấm biểu tượng quyền trên thanh địa chỉ để Allow, hoặc cấp quyền Microphone cho Codex/Chrome trong System Settings.');
+                setStatus('Microphone đang bị chặn. Hãy bấm biểu tượng quyền trên thanh địa chỉ để Allow, hoặc cấp quyền Microphone trong System Settings > Privacy & Security.');
             } else if (error.name === 'NotFoundError') {
                 setStatus('Không tìm thấy microphone. Hãy kiểm tra thiết bị đầu vào âm thanh.');
             } else {
-                setStatus(`Không thể mở microphone: ${error.message}`);
+                setStatus(`Không thể mở microphone: ${error.name} — ${error.message}`);
             }
         }
     };
@@ -266,13 +321,19 @@ export default function VoiceCoach() {
         await transcribeAudio(file, file.type || 'audio/mp4');
     };
 
+    const formatTime = (seconds) => {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    };
+
     const isBusy = isRecording || isTranscribing || isScoring;
     const micStateLabel = {
         granted: 'Mic đã được cấp quyền',
-        denied: 'Mic đang bị chặn',
-        prompt: 'Mic cần cấp quyền',
-        unknown: 'Mic chưa xác định quyền',
-    }[micPermission] || 'Mic chưa xác định quyền';
+        denied: 'Mic đang bị chặn — vào Safari > Settings > Websites > Microphone để cho phép',
+        prompt: 'Mic cần cấp quyền — bấm Ghi âm để cấp',
+        unknown: '',
+    }[micPermission] || '';
 
     return (
         <main className="min-h-screen bg-[#f7f4ee] text-[#1f2933]">
@@ -340,12 +401,12 @@ export default function VoiceCoach() {
                                         disabled={isTranscribing || isScoring}
                                         className={`inline-flex items-center justify-center gap-2 rounded-md px-4 py-3 text-sm font-bold transition ${
                                             isRecording
-                                                ? 'bg-[#b33a3a] text-white hover:bg-[#972f2f]'
+                                                ? 'animate-pulse bg-[#b33a3a] text-white hover:bg-[#972f2f]'
                                                 : 'bg-[#245c4f] text-white hover:bg-[#1d4b41]'
                                         } disabled:cursor-not-allowed disabled:opacity-60`}
                                     >
                                         {isRecording ? <Square className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                                        {isRecording ? 'Dừng ghi âm' : 'Ghi âm'}
+                                        {isRecording ? `Dừng (${formatTime(recordingTime)})` : 'Ghi âm'}
                                     </button>
 
                                     <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border border-[#cfc5b6] bg-white px-4 py-3 text-sm font-bold text-[#245c4f] transition hover:bg-[#eef4f1]">
@@ -359,6 +420,17 @@ export default function VoiceCoach() {
                                             disabled={isBusy}
                                         />
                                     </label>
+
+                                    {lastAudioUrlRef.current && !isRecording && (
+                                        <button
+                                            type="button"
+                                            onClick={() => { const a = new Audio(lastAudioUrlRef.current); a.play(); }}
+                                            className="inline-flex items-center justify-center gap-2 rounded-md border border-[#cfc5b6] bg-white px-4 py-3 text-sm font-bold text-[#66736d] transition hover:bg-[#eef4f1]"
+                                        >
+                                            <Volume2 className="h-4 w-4" />
+                                            Nghe lại
+                                        </button>
+                                    )}
                                 </div>
 
                                 <button
@@ -372,6 +444,7 @@ export default function VoiceCoach() {
                                 </button>
                             </div>
 
+                            {/* Audio level bar */}
                             <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#e7dfd3]">
                                 <div
                                     className={`h-full rounded-full transition-all duration-100 ${isRecording ? 'bg-[#2a8c78]' : 'bg-[#c7bda9]'}`}
@@ -383,16 +456,20 @@ export default function VoiceCoach() {
                                 <div className={`mt-4 flex items-start gap-2 rounded-md px-3 py-2 text-sm ${
                                     micPermission === 'denied'
                                         ? 'bg-[#fff3e8] text-[#9a4b16]'
-                                        : 'bg-[#eef4f1] text-[#245c4f]'
+                                        : status.startsWith('Lỗi') || status.startsWith('Không thể')
+                                            ? 'bg-[#fef2f2] text-[#991b1b]'
+                                            : 'bg-[#eef4f1] text-[#245c4f]'
                                 }`}>
-                                    {isTranscribing || isScoring ? <Loader2 className="mt-0.5 h-4 w-4 animate-spin" /> : micPermission === 'denied' ? <AlertCircle className="mt-0.5 h-4 w-4" /> : <CheckCircle2 className="mt-0.5 h-4 w-4" />}
+                                    {isTranscribing || isScoring ? <Loader2 className="mt-0.5 h-4 w-4 animate-spin" /> : micPermission === 'denied' || status.startsWith('Lỗi') || status.startsWith('Không thể') ? <AlertCircle className="mt-0.5 h-4 w-4" /> : <CheckCircle2 className="mt-0.5 h-4 w-4" />}
                                     {status}
                                 </div>
                             )}
 
-                            <div className="mt-3 text-xs leading-5 text-[#7a6b58]">
-                                {micStateLabel}. Nếu đang dùng in-app browser và bị chặn, cấp quyền Microphone cho Codex trong macOS System Settings, rồi refresh trang.
-                            </div>
+                            {micStateLabel && (
+                                <div className="mt-3 text-xs leading-5 text-[#7a6b58]">
+                                    {micStateLabel}
+                                </div>
+                            )}
                         </div>
                     </div>
 

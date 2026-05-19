@@ -3,11 +3,17 @@
   "outputDirectory": "ui/dist",
   "framework": null,
   "installCommand": "echo 'skip root install'",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Permissions-Policy", "value": "microphone=(self)" }
+        { "key": "Permissions-Policy", "value": "microphone=(*)" }
       ]
     }
   ],

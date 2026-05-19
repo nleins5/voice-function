@@ -1,9 +1,5 @@
-api/
-app/
-prisma/
-scripts/
-*.py
-*.rs
-requirements.txt
-pyproject.toml
-PYTHON_DEPS.txt
+# Ignore logs
+*.log
+.vercel/
+ui/node_modules/
+node_modules/

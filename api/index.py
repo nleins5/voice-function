@@ -6,8 +6,10 @@ import os
 import sys
 import traceback
 
-os.chdir('/vercel/path0')
-sys.path.insert(0, '/vercel/path0')
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+os.chdir(root_dir)
 
 # Set environment to skip heavy initialization
 os.environ.setdefault('VERCEL', '1')
