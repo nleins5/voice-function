@@ -188,6 +188,7 @@
       "deepinfra"
     ],
     "interview": [
+      "groq",
       "nvidia_custom",
       "openrouter",
       "together",
@@ -195,6 +196,7 @@
       "freetheai"
     ],
     "english": [
+      "groq",
       "nvidia_custom",
       "openrouter",
       "together",

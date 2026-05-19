@@ -84,13 +84,22 @@ async def create_transcription(
                         response_format="json"
                     )
                 text = transcription.text.strip()
-            except Exception:
+            except Exception as e:
+                print(f"Groq STT Error: {e}")
                 text = ""
 
         if not text:
-            async with aiofiles.open(temp_path, "rb") as audio_file:
-                audio_bytes = await audio_file.read()
-            text = await _transcribe_with_cloudflare(audio_bytes)
+            try:
+                async with aiofiles.open(temp_path, "rb") as audio_file:
+                    audio_bytes = await audio_file.read()
+                text = await _transcribe_with_cloudflare(audio_bytes)
+            except HTTPException as e:
+                if e.status_code == 500 and "No valid speech-to-text provider" in e.detail:
+                    # If Cloudflare is not configured, just accept the empty text from Groq
+                    # rather than crashing the whole request.
+                    pass
+                else:
+                    raise
 
         # Lọc bỏ các kết quả bịa đặt thường gặp của Whisper
         if not text or text in ["1", "1.", "Đây là câu nói tiếng Việt.", transcription_prompt]:
