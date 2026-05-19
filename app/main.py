@@ -242,6 +242,8 @@ if os.path.exists(ui_path):
     
     @app.get("/{full_path:path}")
     async def serve_ui(full_path: str):
+        if full_path.startswith("v1/"):
+            raise HTTPException(status_code=404, detail="Not Found")
         file_path = os.path.join(ui_path, full_path)
         if os.path.exists(file_path) and os.path.isfile(file_path):
             return FileResponse(file_path)
