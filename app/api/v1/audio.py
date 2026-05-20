@@ -275,10 +275,9 @@ async def create_transcription(
                     stt_duration = 0.0
                     provider_used = "cloudflare"
             except HTTPException as e:
-                if e.status_code == 500 and "No valid speech-to-text provider" in e.detail:
-                    pass
-                else:
-                    raise
+                print(f"[STT] Cloudflare fallback error: {e.detail}", file=sys.stderr)
+            except Exception as e:
+                print(f"[STT] Cloudflare error: {e}", file=sys.stderr)
 
         print(f"[STT] Result: provider={provider_used}, text_len={len(text)}, text={text[:80]}...", file=sys.stderr)
 
