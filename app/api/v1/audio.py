@@ -6,9 +6,53 @@ import tempfile
 import subprocess
 import aiofiles
 import httpx
+import wave
+import re
 from app.config import settings
 
 router = APIRouter()
+
+def analyze_speech_metrics(text: str, segments: list, duration: float) -> dict:
+    words = re.findall(r'\b\w+\b', text.lower())
+    
+    # 1. Repetitions (lặp từ)
+    repetitions = 0
+    for i in range(1, len(words)):
+        if words[i] == words[i-1]:
+            repetitions += 1
+            
+    # 2. Hesitations (ngập ngừng)
+    fillers = {"ờ", "ừm", "à", "ừ", "um", "uh", "hmm", "like", "well", "so"}
+    hesitations = sum(1 for w in words if w in fillers)
+    
+    # 3. Pauses (ngắt quãng)
+    pauses_count = 0
+    total_pause_time = 0.0
+    if segments:
+        for i in range(1, len(segments)):
+            prev_seg = segments[i-1]
+            curr_seg = segments[i]
+            prev_end = getattr(prev_seg, "end", prev_seg.get("end", 0)) if isinstance(prev_seg, dict) else getattr(prev_seg, "end", 0)
+            curr_start = getattr(curr_seg, "start", curr_seg.get("start", 0)) if isinstance(curr_seg, dict) else getattr(curr_seg, "start", 0)
+            gap = curr_start - prev_end
+            if gap > 0.5: # 0.5s threshold
+                pauses_count += 1
+                total_pause_time += gap
+    else:
+        # Fallback estimation
+        est_speech_time = len(words) / 2.5
+        if duration > est_speech_time + 1.0:
+            total_pause_time = duration - est_speech_time
+            pauses_count = int(total_pause_time / 1.0)
+            
+    return {
+        "duration_seconds": round(duration, 1),
+        "pauses_count": pauses_count,
+        "total_pause_seconds": round(total_pause_time, 1),
+        "hesitations_count": hesitations,
+        "repetitions_count": repetitions
+    }
+
 
 
 def _looks_invalid_key(value: str | None) -> bool:
@@ -88,10 +132,10 @@ async def _transcribe_with_cloudflare(audio_bytes: bytes) -> str:
     return (result.get("text") or payload.get("text") or "").strip()
 
 
-async def _transcribe_with_nvidia(temp_path: str, language: str, prompt: str) -> str:
+async def _transcribe_with_nvidia(temp_path: str, language: str, prompt: str) -> tuple[str, list, float]:
     nvidia_api_key = settings.nvidia_api_key
     if _looks_invalid_key(nvidia_api_key):
-        return ""
+        return "", [], 0.0
 
     try:
         client = AsyncOpenAI(api_key=nvidia_api_key, base_url="https://integrate.api.nvidia.com/v1")
@@ -102,18 +146,27 @@ async def _transcribe_with_nvidia(temp_path: str, language: str, prompt: str) ->
                 language=language,
                 temperature=0.0,
                 prompt=prompt,
-                response_format="json"
+                response_format="verbose_json"
             )
-        return transcription.text.strip()
+        text = transcription.text.strip() if hasattr(transcription, "text") else transcription.get("text", "").strip()
+        segments = getattr(transcription, "segments", [])
+        if not segments and isinstance(transcription, dict):
+            segments = transcription.get("segments", [])
+            
+        duration = getattr(transcription, "duration", 0.0)
+        if not duration and isinstance(transcription, dict):
+            duration = transcription.get("duration", 0.0)
+            
+        return text, segments, duration
     except Exception as e:
         print(f"[STT] Nvidia error: {e}", file=sys.stderr)
-        return ""
+        return "", [], 0.0
 
 
-async def _transcribe_with_groq(temp_path: str, language: str, prompt: str) -> str:
+async def _transcribe_with_groq(temp_path: str, language: str, prompt: str) -> tuple[str, list, float]:
     groq_api_key = settings.groq_api_key
     if _looks_invalid_key(groq_api_key):
-        return ""
+        return "", [], 0.0
 
     try:
         client = AsyncOpenAI(api_key=groq_api_key, base_url="https://api.groq.com/openai/v1")
@@ -124,18 +177,28 @@ async def _transcribe_with_groq(temp_path: str, language: str, prompt: str) -> s
                 language=language,
                 temperature=0.0,
                 prompt=prompt,
-                response_format="json"
+                response_format="verbose_json"
             )
-        return transcription.text.strip()
+        text = transcription.text.strip() if hasattr(transcription, "text") else transcription.get("text", "").strip()
+        segments = getattr(transcription, "segments", [])
+        if not segments and isinstance(transcription, dict):
+            segments = transcription.get("segments", [])
+            
+        duration = getattr(transcription, "duration", 0.0)
+        if not duration and isinstance(transcription, dict):
+            duration = transcription.get("duration", 0.0)
+            
+        return text, segments, duration
     except Exception as e:
         print(f"[STT] Groq error: {e}", file=sys.stderr)
-        return ""
+        return "", [], 0.0
 
 
 @router.post("/transcriptions")
 async def create_transcription(
     file: UploadFile = File(...),
     language: str = Form("vi"),
+    client_duration: float = Form(0.0),
 ):
     temp_path = None
     wav_path = None
@@ -168,23 +231,37 @@ async def create_transcription(
         wav_path = _convert_to_wav(temp_path)
         primary_path = wav_path if wav_path else temp_path
 
+        duration_from_wave = 0.0
+        if wav_path and os.path.exists(wav_path):
+            try:
+                with wave.open(wav_path, "rb") as wf:
+                    duration_from_wave = wf.getnframes() / float(wf.getframerate())
+            except Exception as e:
+                print(f"[STT] Error getting duration: {e}", file=sys.stderr)
+
         text = ""
+        segments = []
+        stt_duration = 0.0
         provider_used = "none"
 
         # 1. Try Groq first (faster, better Safari mp4 support)
-        text = await _transcribe_with_groq(primary_path, normalized_language, transcription_prompt)
+        text, segments, stt_duration = await _transcribe_with_groq(primary_path, normalized_language, transcription_prompt)
         if text and not _is_hallucination(text, transcription_prompt):
             provider_used = "groq"
         else:
             text = ""
+            segments = []
+            stt_duration = 0.0
 
         # 2. Fallback to NVIDIA
         if not text:
-            text = await _transcribe_with_nvidia(primary_path, normalized_language, transcription_prompt)
+            text, segments, stt_duration = await _transcribe_with_nvidia(primary_path, normalized_language, transcription_prompt)
             if text and not _is_hallucination(text, transcription_prompt):
                 provider_used = "nvidia"
             else:
                 text = ""
+                segments = []
+                stt_duration = 0.0
 
         # 3. Fallback to Cloudflare
         if not text:
@@ -194,6 +271,8 @@ async def create_transcription(
                 raw = await _transcribe_with_cloudflare(audio_bytes)
                 if raw and not _is_hallucination(raw, transcription_prompt):
                     text = raw
+                    segments = []
+                    stt_duration = 0.0
                     provider_used = "cloudflare"
             except HTTPException as e:
                 if e.status_code == 500 and "No valid speech-to-text provider" in e.detail:
@@ -205,8 +284,11 @@ async def create_transcription(
 
         if not text:
             return {"text": "", "error": "Không nhận diện được giọng nói. Hãy nói gần micro hơn."}
+            
+        final_duration = stt_duration or client_duration or duration_from_wave
 
-        return {"text": text}
+        metrics = analyze_speech_metrics(text, segments, final_duration)
+        return {"text": text, "metrics": metrics}
     except HTTPException:
         raise
     except Exception as e:
@@ -247,13 +329,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     await temp_file.write(data)
 
                 text = ""
+                segments = []
+                stt_duration = 0.0
                 prompt = "Đây là câu nói tiếng Việt."
 
                 if not _looks_invalid_key(groq_api_key):
-                    text = await _transcribe_with_groq(temp_path, "vi", prompt)
+                    text, segments, stt_duration = await _transcribe_with_groq(temp_path, "vi", prompt)
 
                 if not text and not _looks_invalid_key(nvidia_api_key):
-                    text = await _transcribe_with_nvidia(temp_path, "vi", prompt)
+                    text, segments, stt_duration = await _transcribe_with_nvidia(temp_path, "vi", prompt)
 
                 if text and not _is_hallucination(text, prompt):
                     await websocket.send_json({"text": text})

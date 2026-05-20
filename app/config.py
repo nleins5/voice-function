@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 import aiofiles
 
 load_dotenv()
+if os.path.exists(".env.local"):
+    load_dotenv(".env.local")
 
 # --- CONSTANTS ---
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "changeme")

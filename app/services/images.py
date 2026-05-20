@@ -4,7 +4,6 @@ import random
 import urllib.parse
 import httpx
 from typing import Optional, Dict, Any
-from app.config import settings
 
 # Regex for cleaning prompts
 _IMAGE_COMMAND_RE = re.compile(r"^\s*(/image|draw|generate|create|imagine)\s*", re.I)

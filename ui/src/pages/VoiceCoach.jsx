@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertCircle, CheckCircle2, GraduationCap, Loader2, Mic, Send, Square, Upload, UserRoundCheck, Volume2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, GraduationCap, Loader2, Mic, Send, Square, Upload, UserRoundCheck, Volume2, Clock, Pause, Repeat, Activity } from 'lucide-react';
 import { apiFetch, apiPost } from '../lib/api';
 
 const MODES = {
@@ -36,6 +36,8 @@ export default function VoiceCoach() {
     const [audioLevel, setAudioLevel] = useState(0);
     const [recordingTime, setRecordingTime] = useState(0);
     const [micPermission, setMicPermission] = useState('unknown');
+    const [speechMetrics, setSpeechMetrics] = useState(null);
+    const [lastAudioUrl, setLastAudioUrl] = useState(null);
     const [userId] = useState(() => {
         let id = localStorage.getItem('voice_coach_user_id');
         if (!id) {
@@ -73,6 +75,9 @@ export default function VoiceCoach() {
         inspectMicPermission();
         return () => {
             cancelled = true;
+            if (lastAudioUrlRef.current) {
+                URL.revokeObjectURL(lastAudioUrlRef.current);
+            }
         };
     }, []);
 
@@ -142,13 +147,34 @@ export default function VoiceCoach() {
         return 'voice.mp4';
     };
 
-    const transcribeAudio = async (audioBlob, mimeType = audioBlob.type || 'audio/mp4') => {
+    const getAudioDuration = (file) => {
+        return new Promise((resolve) => {
+            const objectUrl = URL.createObjectURL(file);
+            const audio = new Audio(objectUrl);
+            audio.addEventListener('loadedmetadata', () => {
+                resolve(audio.duration);
+                URL.revokeObjectURL(objectUrl);
+            });
+            audio.addEventListener('error', () => {
+                resolve(0);
+                URL.revokeObjectURL(objectUrl);
+            });
+        });
+    };
+
+    const transcribeAudio = async (audioBlob, mimeType = audioBlob.type || 'audio/mp4', clientDuration = 0) => {
         setIsTranscribing(true);
         setStatus(`Đang chuyển giọng nói thành văn bản... (${(audioBlob.size / 1024).toFixed(0)} KB)`);
         try {
+            let actualDuration = clientDuration;
+            if (!actualDuration || actualDuration <= 0) {
+                actualDuration = await getAudioDuration(audioBlob);
+            }
+
             const formData = new FormData();
             formData.append('file', audioBlob, getAudioFilename(audioBlob, mimeType));
             formData.append('language', activeMode.language);
+            formData.append('client_duration', actualDuration);
 
             const response = await apiFetch('/v1/audio/transcriptions', {
                 method: 'POST',
@@ -162,6 +188,7 @@ export default function VoiceCoach() {
 
             const data = await response.json();
             const text = data.text?.trim() || '';
+            const metrics = data.metrics;
 
             if (!text) {
                 const hint = data.error || 'Chưa nghe rõ. Hãy nói to hơn và gần micro hơn (ít nhất 3 giây).';
@@ -170,8 +197,15 @@ export default function VoiceCoach() {
             }
 
             setTranscript(text);
+            setSpeechMetrics(metrics || null);
             setStatus('Đã có transcript. Đang gửi AI chấm điểm...');
-            await submitForScoring(text);
+            
+            let promptText = text;
+            if (metrics) {
+                promptText = `[Transcript]: ${text}\n[Audio Data]: Thời gian: ${metrics.duration_seconds}s, Ngắt quãng: ${metrics.pauses_count} lần (${metrics.total_pause_seconds}s), Ngập ngừng: ${metrics.hesitations_count} lần, Lặp từ: ${metrics.repetitions_count} lần.\n\nHãy chấm điểm chi tiết dựa trên cả nội dung và các dữ liệu giọng nói trên.`;
+            }
+            
+            await submitForScoring(promptText);
         } catch (error) {
             const msg = error.message || 'Unknown error';
             if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
@@ -255,14 +289,16 @@ export default function VoiceCoach() {
 
                 // Save audio URL for playback debugging
                 if (lastAudioUrlRef.current) URL.revokeObjectURL(lastAudioUrlRef.current);
-                lastAudioUrlRef.current = URL.createObjectURL(audioBlob);
+                const url = URL.createObjectURL(audioBlob);
+                lastAudioUrlRef.current = url;
+                setLastAudioUrl(url);
 
                 if (audioBlob.size < 500) {
                     setStatus(`Audio trống (${audioBlob.size} bytes). Mic có thể bị tắt tiếng.`);
                     return;
                 }
                 setStatus(`Đã ghi ${(audioBlob.size/1024).toFixed(0)}KB (${chunkCount} chunks, ${mimeType}). Đang gửi...`);
-                transcribeAudio(audioBlob, mimeType);
+                transcribeAudio(audioBlob, mimeType, recordingTime);
             };
 
             // Safari: don't use timeslice (causes empty chunks)
@@ -276,6 +312,7 @@ export default function VoiceCoach() {
             setRecordingTime(0);
             setFeedback(initialFeedback);
             setTranscript('');
+            setSpeechMetrics(null);
             setStatus(`Đang ghi âm... (${options?.mimeType || 'default'}) — Nói to và rõ, ít nhất 3 giây`);
             updateLevel();
 
@@ -310,6 +347,7 @@ export default function VoiceCoach() {
         setTranscript('');
         setFeedback(initialFeedback);
         setStatus('');
+        setSpeechMetrics(null);
     };
 
     const handleAudioFile = async (event) => {
@@ -318,6 +356,7 @@ export default function VoiceCoach() {
         if (!file) return;
         setTranscript('');
         setFeedback(initialFeedback);
+        setSpeechMetrics(null);
         await transcribeAudio(file, file.type || 'audio/mp4');
     };
 
@@ -393,6 +432,31 @@ export default function VoiceCoach() {
                                 className="min-h-[220px] w-full resize-none rounded-md border border-[#d7cec0] bg-[#fbfaf7] p-4 text-base leading-7 text-[#1f2933] outline-none transition focus:border-[#245c4f] focus:ring-4 focus:ring-[#245c4f]/10"
                             />
 
+                            {speechMetrics && (
+                                <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                    <div className="flex flex-col items-center justify-center rounded-md border border-[#d7cec0] bg-[#fbfaf7] p-3 text-center">
+                                        <Clock className="mb-1 h-4 w-4 text-[#7a8a83]" />
+                                        <div className="text-sm font-bold text-[#16221f]">{speechMetrics.duration_seconds}s</div>
+                                        <div className="text-[11px] uppercase tracking-wider text-[#7a8a83]">Thời gian</div>
+                                    </div>
+                                    <div className="flex flex-col items-center justify-center rounded-md border border-[#d7cec0] bg-[#fbfaf7] p-3 text-center">
+                                        <Pause className="mb-1 h-4 w-4 text-[#7a8a83]" />
+                                        <div className="text-sm font-bold text-[#16221f]">{speechMetrics.pauses_count}</div>
+                                        <div className="text-[11px] uppercase tracking-wider text-[#7a8a83]">Ngắt quãng</div>
+                                    </div>
+                                    <div className="flex flex-col items-center justify-center rounded-md border border-[#d7cec0] bg-[#fbfaf7] p-3 text-center">
+                                        <Activity className="mb-1 h-4 w-4 text-[#7a8a83]" />
+                                        <div className="text-sm font-bold text-[#16221f]">{speechMetrics.hesitations_count}</div>
+                                        <div className="text-[11px] uppercase tracking-wider text-[#7a8a83]">Ngập ngừng</div>
+                                    </div>
+                                    <div className="flex flex-col items-center justify-center rounded-md border border-[#d7cec0] bg-[#fbfaf7] p-3 text-center">
+                                        <Repeat className="mb-1 h-4 w-4 text-[#7a8a83]" />
+                                        <div className="text-sm font-bold text-[#16221f]">{speechMetrics.repetitions_count}</div>
+                                        <div className="text-[11px] uppercase tracking-wider text-[#7a8a83]">Lặp từ</div>
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div className="flex flex-col gap-3 sm:flex-row">
                                     <button
@@ -421,10 +485,10 @@ export default function VoiceCoach() {
                                         />
                                     </label>
 
-                                    {lastAudioUrlRef.current && !isRecording && (
+                                    {lastAudioUrl && !isRecording && (
                                         <button
                                             type="button"
-                                            onClick={() => { const a = new Audio(lastAudioUrlRef.current); a.play(); }}
+                                            onClick={() => { const a = new Audio(lastAudioUrl); a.play(); }}
                                             className="inline-flex items-center justify-center gap-2 rounded-md border border-[#cfc5b6] bg-white px-4 py-3 text-sm font-bold text-[#66736d] transition hover:bg-[#eef4f1]"
                                         >
                                             <Volume2 className="h-4 w-4" />

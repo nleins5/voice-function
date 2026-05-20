@@ -11,6 +11,13 @@ if [[ -f ".env" ]]; then
   set +a
 fi
 
+if [[ -f ".env.local" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env.local"
+  set +a
+fi
+
 export DISABLE_DATABASE="${DISABLE_DATABASE:-1}"
 export GATEWAY_SECRET="${GATEWAY_SECRET:-}"
 export REQUEST_TIMEOUT_S="${REQUEST_TIMEOUT_S:-8}"

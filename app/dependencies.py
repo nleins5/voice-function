@@ -1,5 +1,5 @@
 from fastapi import Header, HTTPException, Request
-from app.config import settings, GATEWAY_SECRET
+from app.config import settings
 from app.services.router import RouterService
 from app.services.rag import RAGService
 from app.services.images import ImageService, image_service

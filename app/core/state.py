@@ -1,6 +1,6 @@
 import time
 import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict
 from app.config import (
     PROVIDER_FAILURE_THRESHOLD, PROVIDER_COOLDOWN_S, ADAPTIVE_ROUTING,
     ADAPTIVE_LATENCY_ALPHA, ADAPTIVE_ERROR_PENALTY, COST_PER_1M

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from app.models import RAGDocument, RAGIngestRequest, RAGSearchRequest, RAGChatRequest
+from app.models import RAGIngestRequest, RAGSearchRequest, RAGChatRequest
 from app.dependencies import get_rag_service, get_router_service
 from app.services.rag import RAGService
 from app.services.router import RouterService

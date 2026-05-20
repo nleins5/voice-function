@@ -4,10 +4,9 @@ import re
 import time
 import math
 import aiofiles
-from typing import Any, Dict, List, Set, Tuple
-from fastapi import HTTPException
+from typing import Any, Dict, List, Tuple
 from app.models import RAGDocument
-from app.config import RAG_MAX_CHUNK_CHARS, RAG_CHUNK_OVERLAP_CHARS, RAG_STORE_PATH
+from app.config import RAG_MAX_CHUNK_CHARS, RAG_CHUNK_OVERLAP_CHARS
 
 class SimpleRAGStore:
     def __init__(self, path: str):

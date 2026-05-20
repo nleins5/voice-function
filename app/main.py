@@ -1,10 +1,21 @@
-import time
 import os
+import time
 import logging
-from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+from app.api import admin
+from app.api.v1 import chat, images, rag, audio, conversations, users
+from app.config import settings, RAG_STORE_PATH, ALLOWED_ORIGINS
+from app.core.state import StateStore
+from app.database import init_db
+from app.dependencies import verify_gateway
+from app.services.rag import SimpleRAGStore, RAGService
+from app.services.router import RouterService
 
 # ── Structured Logging ────────────────────────────────────────────
 logging.basicConfig(
@@ -17,17 +28,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("gateway")
-
-from app.api.v1 import chat, images, rag, audio, conversations, users
-from app.api import admin
-from app.config import settings, RAG_STORE_PATH, ALLOWED_ORIGINS
-from app.core.state import StateStore
-from app.services.rag import SimpleRAGStore, RAGService
-from app.services.router import RouterService
-from app.database import init_db
-from app.dependencies import verify_gateway
-
-from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,8 +54,6 @@ async def lifespan(app: FastAPI):
 
     yield
     # Cleanup
-
-from fastapi.responses import HTMLResponse
 
 app = FastAPI(
     title="Aether AI Gateway",
@@ -188,8 +186,6 @@ app.add_middleware(
 )
 
 # Routes — all /v1/* routes require gateway secret in production
-from fastapi import Depends
-
 app.include_router(chat.router, prefix="/v1/chat", tags=["Chat"], dependencies=[Depends(verify_gateway)])
 app.include_router(images.router, prefix="/v1/images", tags=["Images"], dependencies=[Depends(verify_gateway)])
 app.include_router(rag.router, prefix="/v1/rag", tags=["RAG"], dependencies=[Depends(verify_gateway)])

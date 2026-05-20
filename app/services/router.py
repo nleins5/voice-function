@@ -94,6 +94,8 @@ class RouterService:
             return os.getenv(provider.api_key_env) or "free"
         if provider.key == "groq":
             return settings.groq_api_key or "not_provided"
+        if provider.key.startswith("nvidia"):
+            return settings.nvidia_api_key or "not_provided"
         return os.getenv(provider.api_key_env) or "not_provided"
 
     def _get_base_url(self, provider: Provider) -> str:
@@ -154,6 +156,8 @@ class RouterService:
             return True  # These don't require real keys
         if provider.key == "groq":
             key = settings.groq_api_key
+        elif provider.key.startswith("nvidia"):
+            key = settings.nvidia_api_key
         else:
             key = os.getenv(provider.api_key_env)
         if not key or key == "not_provided":
