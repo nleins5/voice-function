@@ -238,10 +238,10 @@ At the end provide:
 - overall_score
 - estimated_cefr
 - estimated_ielts_speaking_band (be incredibly strict, e.g., if there are basic grammar mistakes, max 5.5)
-- interview_readiness (IN VIETNAMESE)
+- interview_readiness (MUST BE IN ENGLISH, e.g., "Not Ready", "Needs Practice", "Ready")
 - brutally_honest_summary (Do not hold back, be brutally honest, IN VIETNAMESE)
 - top_5_improvements (IN VIETNAMESE)
-- natural_rewritten_answer (how a native professional would have answered flawlessly)
+- natural_rewritten_answer (MUST BE IN ENGLISH ONLY. How a native professional would have answered flawlessly)
 
 Return ONLY valid JSON. Ensure you output standard valid JSON without trailing commas. Ensure all keys and string values are enclosed in double quotes. Do not include markdown formatting like ```json.
 
