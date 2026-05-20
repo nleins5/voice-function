@@ -163,6 +163,7 @@ export default function VoiceCoach() {
         if (mimeType.includes('wav')) return 'voice.wav';
         if (mimeType.includes('aiff')) return 'voice.aiff';
         if (mimeType.includes('mpeg')) return 'voice.mp3';
+        if (mimeType.includes('ogg')) return 'voice.ogg';
         return 'voice.mp4';
     };
 
@@ -170,14 +171,32 @@ export default function VoiceCoach() {
         return new Promise((resolve) => {
             const objectUrl = URL.createObjectURL(file);
             const audio = new Audio(objectUrl);
-            audio.addEventListener('loadedmetadata', () => {
-                resolve(audio.duration);
+            
+            const cleanup = () => {
                 URL.revokeObjectURL(objectUrl);
-            });
-            audio.addEventListener('error', () => {
+                audio.removeEventListener('loadedmetadata', onLoaded);
+                audio.removeEventListener('error', onError);
+            };
+
+            const onLoaded = () => {
+                let duration = audio.duration;
+                if (duration === Infinity) duration = 0;
+                resolve(duration || 0);
+                cleanup();
+            };
+
+            const onError = () => {
                 resolve(0);
-                URL.revokeObjectURL(objectUrl);
-            });
+                cleanup();
+            };
+
+            audio.addEventListener('loadedmetadata', onLoaded);
+            audio.addEventListener('error', onError);
+            
+            setTimeout(() => {
+                resolve(0);
+                cleanup();
+            }, 1000);
         });
     };
 
@@ -254,7 +273,6 @@ export default function VoiceCoach() {
         }
 
         try {
-            // Safari does NOT support sampleRate constraint — omit it
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
@@ -265,7 +283,6 @@ export default function VoiceCoach() {
             streamRef.current = stream;
             setMicPermission('granted');
 
-            // Pick best supported MIME type
             let options = undefined;
             const mimePreference = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
             for (const mime of mimePreference) {
@@ -279,7 +296,6 @@ export default function VoiceCoach() {
             mediaRecorderRef.current = recorder;
             audioChunksRef.current = [];
 
-            // Setup audio level visualization
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             audioContextRef.current = audioContext;
             const source = audioContext.createMediaStreamSource(stream);
@@ -306,27 +322,20 @@ export default function VoiceCoach() {
                 audioChunksRef.current = [];
                 cleanupRecording();
 
-                // Save audio URL for playback debugging
                 if (lastAudioUrlRef.current) URL.revokeObjectURL(lastAudioUrlRef.current);
                 const url = URL.createObjectURL(audioBlob);
                 lastAudioUrlRef.current = url;
                 setLastAudioUrl(url);
 
-                if (audioBlob.size < 500) {
-                    setStatus(`Audio trống (${audioBlob.size} bytes). Mic có thể bị tắt tiếng.`);
+                if (audioBlob.size < 100) {
+                    setStatus(`Audio trống (${audioBlob.size} bytes). Mic có thể bị tắt tiếng hoặc quá ngắn.`);
                     return;
                 }
                 setStatus(`Đã ghi ${(audioBlob.size/1024).toFixed(0)}KB (${chunkCount} chunks, ${mimeType}). Đang gửi...`);
                 transcribeAudio(audioBlob, mimeType, recordingTime);
             };
 
-            // Safari: don't use timeslice (causes empty chunks)
-            const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-            if (isSafari) {
-                recorder.start();
-            } else {
-                recorder.start(250);
-            }
+            recorder.start();
             setIsRecording(true);
             setRecordingTime(0);
             setFeedback(initialFeedback);
@@ -461,7 +470,7 @@ export default function VoiceCoach() {
                             {cat.feedback && (
                                 <div className="mt-1 text-sm text-[#475751]">
                                     <span className="mb-1 block text-[11px] font-bold uppercase tracking-wider">Feedback</span>
-                                    {Array.isArray(cat.feedback) ? cat.feedback.join(" ") : cat.feedback}
+                                    {Array.isArray(cat.feedback) ? cat.feedback.join(" ") : (typeof cat.feedback === 'object' ? JSON.stringify(cat.feedback) : cat.feedback)}
                                 </div>
                             )}
                         </div>
@@ -478,7 +487,7 @@ export default function VoiceCoach() {
                                     <div key={key} className="flex flex-col">
                                         <span className="text-[10px] font-bold uppercase tracking-wider text-[#7a8a83]">{key.replace(/_/g, ' ')}</span>
                                         <span className="text-sm font-medium text-[#26332f]">
-                                            {Array.isArray(value) ? value.join(', ') : value}
+                                            {Array.isArray(value) ? value.join(', ') : (typeof value === 'object' ? JSON.stringify(value) : value)}
                                         </span>
                                     </div>
                                 );
@@ -491,7 +500,7 @@ export default function VoiceCoach() {
                     <div className="rounded-lg border border-[#ded6c8] bg-white p-5 shadow-sm">
                         <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#16221f]">Top Improvements</h3>
                         <ul className="ml-5 list-decimal space-y-2 text-[#3b4a44]">
-                            {feedback.top_5_improvements.map((imp, i) => <li key={i}>{imp}</li>)}
+                            {feedback.top_5_improvements.map((imp, i) => <li key={i}>{typeof imp === 'object' ? JSON.stringify(imp) : imp}</li>)}
                         </ul>
                     </div>
                 )}

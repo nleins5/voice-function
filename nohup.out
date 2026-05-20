@@ -1,0 +1,28 @@
+nohup: python: No such file or directory
+INFO:     Started server process [99106]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+23:54:50 | INFO  | app.services.router | User test... prompt #1/10, task=english
+23:54:50 | INFO  | app.services.router | Provider order (task=english): ['nvidia_custom', 'groq', 'freetheai']
+23:54:50 | INFO  | app.services.router | Attempt 1/3: nvidia_custom (nvidia/llama-3.1-nemotron-70b-instruct)
+23:54:51 | WARNING | app.services.router | Provider nvidia_custom attempt 1 failed [model_not_found]: NotFoundError: Error code: 404 - {'status': 404, 'title': 'Not Found', 'detail': "Function '9b96341b-9791-4db9-a00d
+23:54:51 | INFO  | app.services.router | Provider nvidia_custom has model_not_found error, skipping retries
+23:54:51 | WARNING | app.services.router | Provider nvidia_custom [model_not_found]: cooldown 5min
+23:54:51 | INFO  | app.services.router | Attempt 2/3: groq (llama-3.3-70b-versatile)
+23:54:53 | INFO  | app.services.router | Success: groq in 2657ms (total: 3536ms)
+INFO:     127.0.0.1:54049 - "POST /v1/chat/unified HTTP/1.1" 200 OK
+23:55:23 | INFO  | app.services.router | User test... prompt #2/10, task=english
+23:55:23 | INFO  | app.services.router | Provider order (task=english): ['freetheai', 'groq']
+23:55:23 | INFO  | app.services.router | Attempt 1/2: freetheai (wsf/kimi-k2.6)
+23:55:25 | WARNING | app.services.router | Provider freetheai attempt 1 failed [auth]: AuthenticationError: Error code: 401 - {'error': {'message': 'invalid api key', 'type': 'invalid_api_key'}}
+23:55:25 | INFO  | app.services.router | Provider freetheai has auth error, skipping retries
+23:55:25 | WARNING | app.services.router | Provider freetheai [auth]: cooldown 5min
+23:55:25 | INFO  | app.services.router | Attempt 2/2: groq (llama-3.3-70b-versatile)
+23:55:27 | INFO  | app.services.router | Success: groq in 2338ms (total: 4598ms)
+INFO:     127.0.0.1:54060 - "POST /v1/chat/unified HTTP/1.1" 200 OK
+23:55:33 | INFO  | app.services.router | User test... prompt #3/10, task=english
+23:55:33 | INFO  | app.services.router | Provider order (task=english): ['groq']
+23:55:33 | INFO  | app.services.router | Attempt 1/1: groq (llama-3.3-70b-versatile)
+23:55:35 | INFO  | app.services.router | Success: groq in 2781ms (total: 2781ms)
+INFO:     127.0.0.1:54064 - "POST /v1/chat/unified HTTP/1.1" 200 OK

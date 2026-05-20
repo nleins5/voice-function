@@ -336,6 +336,8 @@ class RouterService:
             }
             if max_tokens:
                 payload["max_tokens"] = max_tokens
+            if task in ["interview", "english"]:
+                payload["response_format"] = {"type": "json_object"}
 
             last_error = None
             for attempt in range(MAX_RETRIES_PER_PROVIDER + 1):
@@ -510,6 +512,8 @@ class RouterService:
             }
             if max_tokens:
                 payload["max_tokens"] = max_tokens
+            if task in ["interview", "english"]:
+                payload["response_format"] = {"type": "json_object"}
 
             last_error = None
             for attempt in range(MAX_RETRIES_PER_PROVIDER + 1):
