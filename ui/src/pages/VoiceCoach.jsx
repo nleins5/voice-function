@@ -108,6 +108,23 @@ export default function VoiceCoach() {
         return () => cleanupRecording(false);
     }, [cleanupRecording]);
 
+    const parseJSON = (text) => {
+        try {
+            let cleanText = text.trim();
+            if (cleanText.startsWith('```json')) {
+                cleanText = cleanText.substring(7);
+            } else if (cleanText.startsWith('```')) {
+                cleanText = cleanText.substring(3);
+            }
+            if (cleanText.endsWith('```')) {
+                cleanText = cleanText.substring(0, cleanText.length - 3);
+            }
+            return JSON.parse(cleanText.trim());
+        } catch (e) {
+            return text;
+        }
+    };
+
     const submitForScoring = async (textOverride) => {
         const answerText = (textOverride ?? transcript).trim();
         if (!answerText || !userId) return;
@@ -128,7 +145,9 @@ export default function VoiceCoach() {
             }
 
             const data = await response.json();
-            setFeedback(data.answer || 'Không nhận được phản hồi từ AI.');
+            const rawAnswer = data.answer || 'Không nhận được phản hồi từ AI.';
+            const parsedFeedback = typeof rawAnswer === 'string' ? parseJSON(rawAnswer) : rawAnswer;
+            setFeedback(parsedFeedback);
             setStatus('Đã chấm điểm xong.');
         } catch (error) {
             setFeedback(`Không thể chấm điểm lúc này.\n\n${error.message}`);
@@ -374,6 +393,119 @@ export default function VoiceCoach() {
         unknown: '',
     }[micPermission] || '';
 
+    const renderFeedbackContent = () => {
+        if (typeof feedback === 'string') {
+            return (
+                <div className="min-h-[520px] whitespace-pre-wrap rounded-md border border-[#ebe4d9] bg-[#fbfaf7] p-5 text-[15px] leading-7 text-[#26332f]">
+                    {feedback}
+                </div>
+            );
+        }
+
+        if (!feedback) return null;
+
+        return (
+            <div className="flex flex-col gap-6">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between rounded-lg border border-[#ded6c8] bg-white p-5 shadow-sm">
+                    <div className="text-center sm:text-left">
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-[#7a8a83]">Overall Score</h3>
+                        <div className="text-4xl font-black text-[#16221f]">{feedback.overall_score}<span className="text-2xl text-[#66736d]">/10</span></div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                        {feedback.hiring_recommendation && (
+                            <div className="rounded-md bg-[#eef4f1] px-4 py-2 text-center text-sm font-bold text-[#245c4f]">
+                                Recommendation: {feedback.hiring_recommendation}
+                            </div>
+                        )}
+                        {feedback.estimated_cefr && (
+                            <div className="rounded-md bg-[#eef4f1] px-4 py-2 text-center text-sm font-bold text-[#245c4f]">
+                                CEFR: {feedback.estimated_cefr} | IELTS: {feedback.estimated_ielts_speaking_band}
+                            </div>
+                        )}
+                        {feedback.interview_readiness && (
+                            <div className="rounded-md bg-[#fff3e8] px-4 py-2 text-center text-sm font-bold text-[#9a4b16]">
+                                Readiness: {feedback.interview_readiness}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                <div className="rounded-lg border border-[#f5e6d3] bg-[#fefaf5] p-5 shadow-sm">
+                    <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-[#9a6a23]">Brutally Honest Summary</h3>
+                    <p className="leading-relaxed text-[#4a3f35]">{feedback.brutally_honest_summary}</p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {Object.entries(feedback.categories || {}).map(([key, cat]) => (
+                        <div key={key} className="flex flex-col gap-3 rounded-lg border border-[#ded6c8] bg-white p-4 shadow-sm">
+                            <div className="flex items-center justify-between border-b border-[#f0ebe1] pb-2">
+                                <h4 className="font-bold capitalize text-[#16221f]">{key.replace(/_/g, ' ')}</h4>
+                                <span className="text-lg font-black text-[#245c4f]">{cat.score}/10</span>
+                            </div>
+                            {cat.strengths?.length > 0 && (
+                                <div>
+                                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#2a8c78]">Strengths</span>
+                                    <ul className="ml-4 list-disc text-sm text-[#3b4a44]">
+                                        {cat.strengths.map((s, i) => <li key={i}>{s}</li>)}
+                                    </ul>
+                                </div>
+                            )}
+                            {cat.weaknesses?.length > 0 && (
+                                <div>
+                                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#b33a3a]">Weaknesses</span>
+                                    <ul className="ml-4 list-disc text-sm text-[#5c3131]">
+                                        {cat.weaknesses.map((s, i) => <li key={i}>{s}</li>)}
+                                    </ul>
+                                </div>
+                            )}
+                            {cat.feedback && (
+                                <div className="mt-1 text-sm text-[#475751]">
+                                    <span className="mb-1 block text-[11px] font-bold uppercase tracking-wider">Feedback</span>
+                                    {Array.isArray(cat.feedback) ? cat.feedback.join(" ") : cat.feedback}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+
+                {feedback.speech_analysis && typeof feedback.speech_analysis === 'object' && (
+                    <div className="rounded-lg border border-[#ded6c8] bg-white p-5 shadow-sm">
+                        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#16221f]">Speech Analysis Details</h3>
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            {Object.entries(feedback.speech_analysis).map(([key, value]) => {
+                                if (!value || (Array.isArray(value) && value.length === 0)) return null;
+                                return (
+                                    <div key={key} className="flex flex-col">
+                                        <span className="text-[10px] font-bold uppercase tracking-wider text-[#7a8a83]">{key.replace(/_/g, ' ')}</span>
+                                        <span className="text-sm font-medium text-[#26332f]">
+                                            {Array.isArray(value) ? value.join(', ') : value}
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {feedback.top_5_improvements && feedback.top_5_improvements.length > 0 && (
+                    <div className="rounded-lg border border-[#ded6c8] bg-white p-5 shadow-sm">
+                        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#16221f]">Top Improvements</h3>
+                        <ul className="ml-5 list-decimal space-y-2 text-[#3b4a44]">
+                            {feedback.top_5_improvements.map((imp, i) => <li key={i}>{imp}</li>)}
+                        </ul>
+                    </div>
+                )}
+
+                {(feedback.ideal_rewritten_answer || feedback.natural_rewritten_answer) && (
+                    <div className="rounded-lg border border-[#e2e8f0] bg-[#f8f9fa] p-5 shadow-sm">
+                        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#334155]">Ideal Rewritten Answer</h3>
+                        <p className="font-serif text-[15px] italic leading-relaxed text-[#1e293b]">"{feedback.ideal_rewritten_answer || feedback.natural_rewritten_answer}"</p>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     return (
         <main className="min-h-screen bg-[#f7f4ee] text-[#1f2933]">
             <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-5 sm:px-6 lg:px-8">
@@ -545,9 +677,7 @@ export default function VoiceCoach() {
                             </div>
                             {(isTranscribing || isScoring) && <Loader2 className="h-5 w-5 animate-spin text-[#245c4f]" />}
                         </div>
-                        <div className="min-h-[520px] whitespace-pre-wrap rounded-md border border-[#ebe4d9] bg-[#fbfaf7] p-5 text-[15px] leading-7 text-[#26332f]">
-                            {feedback}
-                        </div>
+                        {renderFeedbackContent()}
                     </section>
                 </section>
             </div>
