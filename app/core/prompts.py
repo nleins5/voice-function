@@ -302,7 +302,7 @@ JSON FORMAT:
   "top_5_improvements": ["string"],
   "natural_rewritten_answer": ""
 }
-\"\"\".strip()
+""".strip()
 
 
 
