@@ -1,43 +1,48 @@
-# Stage 1: Build the React frontend
+# ─────────────────────────────────────────────────────────────
+# Stage 1: Build React frontend (Node.js)
+# ─────────────────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/ui
 
-# Copy only frontend package files to leverage caching
-COPY ui/package*.json ./
+# Copy only ui package files first (maximize Docker layer cache)
+COPY ui/package.json ui/package-lock.json* ./
 
-# Install Node dependencies specifically for the frontend
-RUN npm install
+# Install Node dependencies cleanly (ci = faster, reproducible)
+RUN npm ci
 
-# Copy frontend source files
+# Copy all frontend source files
 COPY ui/ ./
 
-# Build React production bundle (generates /app/ui/dist)
+# Build the production React bundle → /app/ui/dist
 RUN npm run build
 
-# Stage 2: Build the FastAPI backend
+# ─────────────────────────────────────────────────────────────
+# Stage 2: Python FastAPI backend
+# ─────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS backend
 WORKDIR /app
 
-# Install system dependencies (build tools, curl, etc.)
+# Install ffmpeg for audio conversion (needed by audio transcription)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python requirements and install
+# Install Python dependencies
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend application source
+# Copy backend source code
 COPY app/ ./app/
 COPY providers.json ./
-COPY scripts/ ./scripts/
 
-# Copy the built React assets from Stage 1 into the Python backend's expected directory
+# Copy the compiled React UI from Stage 1 into the location FastAPI expects
 COPY --from=frontend-builder /app/ui/dist ./ui/dist
 
-# Expose port (FastAPI defaults to 8000, Render sets PORT dynamically)
+# Pre-create __pycache__ dirs and warm-up compilation to speed startup
+RUN python3 -m compileall app/ -q
+
 EXPOSE 8000
 
-# Start command: runs Uvicorn reading the dynamic PORT variable set by Render, defaulting to 8000
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Render injects $PORT dynamically; uvicorn must listen on that port
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
