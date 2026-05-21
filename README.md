@@ -104,7 +104,9 @@ npm run dev
 
 ---
 
-## 🚀 Production Deployment (Vercel)
+## 🚀 Production Deployment
+
+### Option A: Vercel (Serverless)
 
 This repository is optimized for one-click deployment to **Vercel**:
 
@@ -112,6 +114,28 @@ This repository is optimized for one-click deployment to **Vercel**:
 2. Import the project into your Vercel Dashboard.
 3. Configure the **Environment Variables** in Vercel to match your `.env` values (listed above).
 4. Deploy! Vercel will automatically read `vercel.json`, build the React UI inside `ui/`, and set up the FastAPI serverless endpoint at `/api/index.py`.
+
+### Option B: Render (Persistent Web Service with Docker)
+
+We have pre-configured a high-performance **multi-stage Docker build** and a blueprint `render.yaml` for a zero-config deployment on Render. Using a Docker environment ensures that the React frontend is compiled cleanly using Node.js, and the FastAPI backend runs on Python, completely side-stepping runtime or dependency mismatch errors on Render.
+
+#### Deploy via Blueprint (Easiest)
+1. Push this repository to GitHub.
+2. Go to **Render Dashboard** -> **Blueprints** -> **New Blueprint Instance**.
+3. Select your repository. Render will automatically detect `render.yaml` and configure a **Docker Web Service** named `voice-function-api`.
+4. Add your **Environment Variables** (API keys like `GROQ_API_KEY`, `NVIDIA_API_KEY`, etc.) in the Render UI.
+5. Click **Deploy**.
+
+#### Deploy Manually
+If you want to configure the service manually on Render:
+1. Click **New +** -> **Web Service** in your Render Dashboard.
+2. Connect your GitHub repository.
+3. Set **Runtime** to **Docker** (crucial!).
+4. Keep the default Dockerfile settings (Render will auto-detect the root `Dockerfile`).
+5. Add your environment variables under **Advanced**:
+   - `DISABLE_DATABASE` = `1`
+   - Plus your provider keys (e.g. `GROQ_API_KEY`, `NVIDIA_API_KEY`).
+6. Click **Create Web Service**. Render will execute the multi-stage build, compile the React assets, mount them to the FastAPI server, and deploy the service.
 
 ---
 
