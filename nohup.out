@@ -26,3 +26,7 @@ INFO:     127.0.0.1:54060 - "POST /v1/chat/unified HTTP/1.1" 200 OK
 23:55:33 | INFO  | app.services.router | Attempt 1/1: groq (llama-3.3-70b-versatile)
 23:55:35 | INFO  | app.services.router | Success: groq in 2781ms (total: 2781ms)
 INFO:     127.0.0.1:54064 - "POST /v1/chat/unified HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [99106]

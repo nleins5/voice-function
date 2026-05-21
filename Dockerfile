@@ -1,18 +1,17 @@
 # Stage 1: Build the React frontend
 FROM node:20-alpine AS frontend-builder
-WORKDIR /app
+WORKDIR /app/ui
 
-# Copy root package.json and ui package.json to leverage Docker cache
-COPY package*.json ./
-COPY ui/package*.json ./ui/
+# Copy only frontend package files to leverage caching
+COPY ui/package*.json ./
 
-# Install Node dependencies
+# Install Node dependencies specifically for the frontend
 RUN npm install
 
 # Copy frontend source files
-COPY ui/ ./ui/
+COPY ui/ ./
 
-# Build React production bundle (generates ui/dist)
+# Build React production bundle (generates /app/ui/dist)
 RUN npm run build
 
 # Stage 2: Build the FastAPI backend
