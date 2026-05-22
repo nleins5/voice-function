@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import admin
 from app.api.v1 import chat, images, rag, audio, conversations, users
-from app.config import settings, RAG_STORE_PATH, ALLOWED_ORIGINS
+from app.config import RAG_STORE_PATH, ALLOWED_ORIGINS
 from app.core.state import StateStore
 from app.database import init_db
 from app.dependencies import verify_gateway

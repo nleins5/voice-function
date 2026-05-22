@@ -120,7 +120,7 @@ export default function VoiceCoach() {
                 cleanText = cleanText.substring(0, cleanText.length - 3);
             }
             return JSON.parse(cleanText.trim());
-        } catch (e) {
+        } catch {
             return text;
         }
     };

@@ -194,6 +194,96 @@ async def _transcribe_with_groq(temp_path: str, language: str, prompt: str) -> t
         return "", [], 0.0
 
 
+@router.get("/test")
+async def test_audio_providers():
+    """Test speech-to-text API connectivity and keys using a dynamically synthesized audio file."""
+    import math
+    import struct
+    
+    results = {}
+    temp_path = None
+    try:
+        # Generate 1 second of mono 16-bit silent/tone audio at 16000Hz (A4 = 440Hz)
+        sample_rate = 16000
+        duration = 1.0
+        frequency = 440.0
+        amplitude = 32767 * 0.5
+        num_samples = int(sample_rate * duration)
+        
+        suffix = ".wav"
+        fd, temp_path = tempfile.mkstemp(suffix=suffix)
+        os.close(fd)
+        
+        # Write to a valid WAV file structure
+        with wave.open(temp_path, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            for i in range(num_samples):
+                val = int(amplitude * math.sin(2.0 * math.pi * frequency * i / sample_rate))
+                data = struct.pack("<h", val)
+                wav_file.writeframesraw(data)
+                
+        async with aiofiles.open(temp_path, "rb") as f:
+            audio_bytes = await f.read()
+
+        # Test Groq
+        groq_text = ""
+        groq_err = None
+        try:
+            groq_text, _, _ = await _transcribe_with_groq(temp_path, "en", "")
+        except Exception as e:
+            groq_err = str(e)
+            
+        results["groq"] = {
+            "configured": not _looks_invalid_key(settings.groq_api_key),
+            "result": groq_text,
+            "error": groq_err
+        }
+        
+        # Test NVIDIA
+        nvidia_text = ""
+        nvidia_err = None
+        try:
+            nvidia_text, _, _ = await _transcribe_with_nvidia(temp_path, "en", "")
+        except Exception as e:
+            nvidia_err = str(e)
+            
+        results["nvidia"] = {
+            "configured": not _looks_invalid_key(settings.nvidia_api_key),
+            "result": nvidia_text,
+            "error": nvidia_err
+        }
+        
+        # Test Cloudflare
+        cloudflare_text = ""
+        cloudflare_err = None
+        try:
+            cloudflare_text = await _transcribe_with_cloudflare(audio_bytes)
+        except Exception as e:
+            cloudflare_err = str(e)
+            
+        results["cloudflare"] = {
+            "configured": not _looks_invalid_key(os.getenv("CLOUDFLARE_API_KEY")),
+            "result": cloudflare_text,
+            "error": cloudflare_err
+        }
+        
+        return {
+            "status": "success",
+            "results": results
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+
 @router.post("/transcriptions")
 async def create_transcription(
     file: UploadFile = File(...),

@@ -38,7 +38,7 @@ class MessageOut(BaseModel):
 async def _get_user_from_key(api_key: str, db: AsyncSession) -> Optional[User]:
     if not api_key:
         return None
-    result = await db.execute(select(User).where(User.api_key == api_key, User.is_active == True))
+    result = await db.execute(select(User).where(User.api_key == api_key, User.is_active))
     return result.scalar_one_or_none()
 
 

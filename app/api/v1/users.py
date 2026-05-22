@@ -59,7 +59,7 @@ async def login_user(
 ):
     """Validate an API key and return user info."""
     result = await db.execute(
-        select(User).where(User.api_key == body.api_key, User.is_active == True)
+        select(User).where(User.api_key == body.api_key, User.is_active)
     )
     user = result.scalar_one_or_none()
     if not user:
@@ -80,7 +80,7 @@ async def get_current_user(
 ):
     """Get current user info + usage stats."""
     result = await db.execute(
-        select(User).where(User.api_key == x_api_key, User.is_active == True)
+        select(User).where(User.api_key == x_api_key, User.is_active)
     )
     user = result.scalar_one_or_none()
     if not user:
