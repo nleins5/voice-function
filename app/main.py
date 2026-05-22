@@ -27,7 +27,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logger = logging.getLogger("gateway")
+logger = logging.getLogger("voice-function")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,9 +56,9 @@ async def lifespan(app: FastAPI):
     # Cleanup
 
 app = FastAPI(
-    title="Aether AI Gateway",
-    description="Modular, high-availability AI provider routing gateway.",
-    version="2.0.0",
+    title="Voice Function",
+    description="Voice coaching & speech-to-text platform with multi-provider STT routing.",
+    version="1.0.0",
     lifespan=lifespan,
     docs_url=None,  # Disable default swagger
     redoc_url=None  # Disable default redoc
@@ -70,7 +70,7 @@ async def custom_api_docs():
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Aether AI Gateway - API Reference</title>
+        <title>Voice Function - API Reference</title>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <style>
@@ -185,7 +185,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routes — all /v1/* routes require gateway secret in production
+# Routes — all /v1/* routes require auth secret in production
 app.include_router(chat.router, prefix="/v1/chat", tags=["Chat"], dependencies=[Depends(verify_gateway)])
 app.include_router(images.router, prefix="/v1/images", tags=["Images"], dependencies=[Depends(verify_gateway)])
 app.include_router(rag.router, prefix="/v1/rag", tags=["RAG"], dependencies=[Depends(verify_gateway)])

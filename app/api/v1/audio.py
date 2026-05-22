@@ -8,9 +8,14 @@ import aiofiles
 import httpx
 import wave
 import re
+import random
 from app.config import settings
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Speech metrics analysis
+# ---------------------------------------------------------------------------
 
 def analyze_speech_metrics(text: str, segments: list, duration: float) -> dict:
     words = re.findall(r'\b\w+\b', text.lower())
@@ -54,12 +59,18 @@ def analyze_speech_metrics(text: str, segments: list, duration: float) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _looks_invalid_key(value: str | None) -> bool:
     if not value:
         return True
     lowered = value.lower()
-    return any(marker in lowered for marker in ("invalid", "test_key", "your_", "paste_", "replace_"))
+    return any(marker in lowered for marker in (
+        "invalid", "test_key", "your_", "paste_", "replace_",
+        "free-gateway", "changeme", "placeholder", "xxx",
+    ))
 
 
 # Whisper hallucination patterns (silent/noise audio produces these)
@@ -103,6 +114,82 @@ def _convert_to_wav(input_path: str) -> str:
         pass  # ffmpeg not installed or timed out
     return ""
 
+
+# ---------------------------------------------------------------------------
+# Weighted round-robin provider selection
+# ---------------------------------------------------------------------------
+# STT_WEIGHTS env var format: "groq:3,nvidia:3,deepgram:2,openai:1,cloudflare:1"
+# Higher weight = more traffic. Unconfigured providers are automatically skipped.
+
+_ALL_STT_PROVIDERS = ["groq", "nvidia", "deepgram", "openai", "cloudflare"]
+
+def _parse_stt_weights() -> dict[str, int]:
+    """Parse STT_WEIGHTS env var into {provider: weight} dict."""
+    raw = os.getenv("STT_WEIGHTS", "groq:3,nvidia:3,deepgram:2,openai:1,cloudflare:1")
+    weights = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if ":" in pair:
+            name, w = pair.split(":", 1)
+            name = name.strip().lower()
+            try:
+                weights[name] = max(int(w.strip()), 0)
+            except ValueError:
+                weights[name] = 1
+    return weights
+
+
+def _get_available_providers() -> list[str]:
+    """Return list of providers that have valid API keys configured."""
+    available = []
+    if not _looks_invalid_key(settings.groq_api_key):
+        available.append("groq")
+    if not _looks_invalid_key(settings.nvidia_api_key):
+        available.append("nvidia")
+    if not _looks_invalid_key(os.getenv("DEEPGRAM_API_KEY")):
+        available.append("deepgram")
+    if not _looks_invalid_key(os.getenv("OPENAI_API_KEY")):
+        available.append("openai")
+    if not _looks_invalid_key(os.getenv("CLOUDFLARE_API_KEY")):
+        available.append("cloudflare")
+    return available
+
+
+def _pick_provider_order() -> list[str]:
+    """Return providers ordered by weighted random selection.
+
+    Each call shuffles the order so traffic is distributed.
+    Providers with higher weight appear first more often.
+    Unconfigured or zero-weight providers are excluded.
+    """
+    weights = _parse_stt_weights()
+    available = _get_available_providers()
+
+    # Filter to only configured + non-zero weight
+    pool = [(p, weights.get(p, 0)) for p in available if weights.get(p, 0) > 0]
+    if not pool:
+        # Fallback: return whatever is available with equal weight
+        return available
+
+    # Weighted shuffle: pick one-by-one without replacement
+    ordered = []
+    remaining = list(pool)
+    while remaining:
+        total = sum(w for _, w in remaining)
+        r = random.uniform(0, total)
+        cumulative = 0
+        for i, (provider, weight) in enumerate(remaining):
+            cumulative += weight
+            if r <= cumulative:
+                ordered.append(provider)
+                remaining.pop(i)
+                break
+    return ordered
+
+
+# ---------------------------------------------------------------------------
+# STT provider implementations
+# ---------------------------------------------------------------------------
 
 async def _transcribe_with_cloudflare(audio_bytes: bytes) -> str:
     account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
@@ -194,6 +281,158 @@ async def _transcribe_with_groq(temp_path: str, language: str, prompt: str) -> t
         return "", [], 0.0
 
 
+async def _transcribe_with_deepgram(temp_path: str, language: str) -> tuple[str, list, float]:
+    """Transcribe using Deepgram Nova-2 API (free tier: 12,500 min/month)."""
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if _looks_invalid_key(api_key):
+        return "", [], 0.0
+
+    try:
+        lang_code = "en" if language.startswith("en") else "vi"
+        url = f"https://api.deepgram.com/v1/listen?model=nova-2&language={lang_code}&smart_format=true&utterances=true"
+
+        async with aiofiles.open(temp_path, "rb") as f:
+            audio_bytes = await f.read()
+
+        # Detect content type from file extension
+        ext = os.path.splitext(temp_path)[1].lower()
+        content_type_map = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mpeg",
+            ".webm": "audio/webm",
+            ".mp4": "audio/mp4",
+            ".ogg": "audio/ogg",
+            ".flac": "audio/flac",
+        }
+        content_type = content_type_map.get(ext, "audio/wav")
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                url,
+                headers={
+                    "Authorization": f"Token {api_key}",
+                    "Content-Type": content_type,
+                },
+                content=audio_bytes,
+            )
+
+        if response.status_code != 200:
+            print(f"[STT] Deepgram error {response.status_code}: {response.text[:200]}", file=sys.stderr)
+            return "", [], 0.0
+
+        payload = response.json()
+        results = payload.get("results", {})
+        channels = results.get("channels", [])
+        if not channels:
+            return "", [], 0.0
+
+        alt = channels[0].get("alternatives", [{}])[0]
+        text = alt.get("transcript", "").strip()
+        duration = results.get("duration", 0.0)
+
+        # Convert Deepgram utterances → segments format
+        segments = []
+        for utt in results.get("utterances", []):
+            segments.append({
+                "start": utt.get("start", 0.0),
+                "end": utt.get("end", 0.0),
+                "text": utt.get("transcript", ""),
+            })
+
+        return text, segments, duration
+    except Exception as e:
+        print(f"[STT] Deepgram error: {e}", file=sys.stderr)
+        return "", [], 0.0
+
+
+async def _transcribe_with_openai(temp_path: str, language: str, prompt: str) -> tuple[str, list, float]:
+    """Transcribe using OpenAI Whisper API directly (pay-per-use, $0.006/min)."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if _looks_invalid_key(api_key):
+        return "", [], 0.0
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        with open(temp_path, "rb") as audio_file:
+            transcription = await client.audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-1",
+                language=language,
+                temperature=0.0,
+                prompt=prompt,
+                response_format="verbose_json"
+            )
+        text = transcription.text.strip() if hasattr(transcription, "text") else transcription.get("text", "").strip()
+        segments = getattr(transcription, "segments", [])
+        if not segments and isinstance(transcription, dict):
+            segments = transcription.get("segments", [])
+
+        duration = getattr(transcription, "duration", 0.0)
+        if not duration and isinstance(transcription, dict):
+            duration = transcription.get("duration", 0.0)
+
+        return text, segments, duration
+    except Exception as e:
+        print(f"[STT] OpenAI error: {e}", file=sys.stderr)
+        return "", [], 0.0
+
+
+# ---------------------------------------------------------------------------
+# Unified transcription dispatcher (weighted round-robin + fallback)
+# ---------------------------------------------------------------------------
+
+async def _transcribe_roundrobin(
+    temp_path: str,
+    language: str,
+    prompt: str,
+    audio_bytes: bytes | None = None,
+) -> tuple[str, list, float, str]:
+    """Try providers in weighted-random order, return (text, segments, duration, provider_used).
+
+    This distributes load across all configured providers instead of
+    always hammering Groq first.
+    """
+    order = _pick_provider_order()
+    print(f"[STT] Provider order for this request: {order}", file=sys.stderr)
+
+    for provider in order:
+        text = ""
+        segments: list = []
+        duration = 0.0
+
+        try:
+            if provider == "groq":
+                text, segments, duration = await _transcribe_with_groq(temp_path, language, prompt)
+            elif provider == "nvidia":
+                text, segments, duration = await _transcribe_with_nvidia(temp_path, language, prompt)
+            elif provider == "deepgram":
+                text, segments, duration = await _transcribe_with_deepgram(temp_path, language)
+            elif provider == "openai":
+                text, segments, duration = await _transcribe_with_openai(temp_path, language, prompt)
+            elif provider == "cloudflare":
+                if audio_bytes is None:
+                    async with aiofiles.open(temp_path, "rb") as f:
+                        audio_bytes = await f.read()
+                raw = await _transcribe_with_cloudflare(audio_bytes)
+                if raw:
+                    text = raw
+        except Exception as e:
+            print(f"[STT] {provider} failed: {e}", file=sys.stderr)
+            continue
+
+        if text and not _is_hallucination(text, prompt):
+            print(f"[STT] Success via {provider}: {text[:60]}...", file=sys.stderr)
+            return text, segments, duration, provider
+
+        print(f"[STT] {provider} returned empty/hallucination, trying next...", file=sys.stderr)
+
+    return "", [], 0.0, "none"
+
+
+# ---------------------------------------------------------------------------
+# Test endpoint
+# ---------------------------------------------------------------------------
+
 @router.get("/test")
 async def test_audio_providers():
     """Test speech-to-text API connectivity and keys using a dynamically synthesized audio file."""
@@ -227,51 +466,43 @@ async def test_audio_providers():
         async with aiofiles.open(temp_path, "rb") as f:
             audio_bytes = await f.read()
 
-        # Test Groq
-        groq_text = ""
-        groq_err = None
-        try:
-            groq_text, _, _ = await _transcribe_with_groq(temp_path, "en", "")
-        except Exception as e:
-            groq_err = str(e)
-            
-        results["groq"] = {
-            "configured": not _looks_invalid_key(settings.groq_api_key),
-            "result": groq_text,
-            "error": groq_err
-        }
-        
-        # Test NVIDIA
-        nvidia_text = ""
-        nvidia_err = None
-        try:
-            nvidia_text, _, _ = await _transcribe_with_nvidia(temp_path, "en", "")
-        except Exception as e:
-            nvidia_err = str(e)
-            
-        results["nvidia"] = {
-            "configured": not _looks_invalid_key(settings.nvidia_api_key),
-            "result": nvidia_text,
-            "error": nvidia_err
-        }
-        
-        # Test Cloudflare
-        cloudflare_text = ""
-        cloudflare_err = None
-        try:
-            cloudflare_text = await _transcribe_with_cloudflare(audio_bytes)
-        except Exception as e:
-            cloudflare_err = str(e)
-            
-        results["cloudflare"] = {
-            "configured": not _looks_invalid_key(os.getenv("CLOUDFLARE_API_KEY")),
-            "result": cloudflare_text,
-            "error": cloudflare_err
-        }
-        
+        available = _get_available_providers()
+        weights = _parse_stt_weights()
+
+        # Test each configured provider
+        for provider in _ALL_STT_PROVIDERS:
+            p_text = ""
+            p_err = None
+            configured = provider in available
+            weight = weights.get(provider, 0)
+
+            if configured:
+                try:
+                    if provider == "groq":
+                        p_text, _, _ = await _transcribe_with_groq(temp_path, "en", "")
+                    elif provider == "nvidia":
+                        p_text, _, _ = await _transcribe_with_nvidia(temp_path, "en", "")
+                    elif provider == "deepgram":
+                        p_text, _, _ = await _transcribe_with_deepgram(temp_path, "en")
+                    elif provider == "openai":
+                        p_text, _, _ = await _transcribe_with_openai(temp_path, "en", "")
+                    elif provider == "cloudflare":
+                        p_text = await _transcribe_with_cloudflare(audio_bytes)
+                except Exception as e:
+                    p_err = str(e)
+
+            results[provider] = {
+                "configured": configured,
+                "weight": weight,
+                "result": p_text,
+                "error": p_err,
+            }
+
         return {
             "status": "success",
-            "results": results
+            "routing": "weighted_round_robin",
+            "stt_weights_env": os.getenv("STT_WEIGHTS", "(default)"),
+            "results": results,
         }
     except Exception as e:
         return {
@@ -283,6 +514,9 @@ async def test_audio_providers():
             os.remove(temp_path)
 
 
+# ---------------------------------------------------------------------------
+# Main transcription endpoint
+# ---------------------------------------------------------------------------
 
 @router.post("/transcriptions")
 async def create_transcription(
@@ -329,45 +563,10 @@ async def create_transcription(
             except Exception as e:
                 print(f"[STT] Error getting duration: {e}", file=sys.stderr)
 
-        text = ""
-        segments = []
-        stt_duration = 0.0
-        provider_used = "none"
-
-        # 1. Try Groq first (faster, better Safari mp4 support)
-        text, segments, stt_duration = await _transcribe_with_groq(primary_path, normalized_language, transcription_prompt)
-        if text and not _is_hallucination(text, transcription_prompt):
-            provider_used = "groq"
-        else:
-            text = ""
-            segments = []
-            stt_duration = 0.0
-
-        # 2. Fallback to NVIDIA
-        if not text:
-            text, segments, stt_duration = await _transcribe_with_nvidia(primary_path, normalized_language, transcription_prompt)
-            if text and not _is_hallucination(text, transcription_prompt):
-                provider_used = "nvidia"
-            else:
-                text = ""
-                segments = []
-                stt_duration = 0.0
-
-        # 3. Fallback to Cloudflare
-        if not text:
-            try:
-                async with aiofiles.open(primary_path, "rb") as audio_file:
-                    audio_bytes = await audio_file.read()
-                raw = await _transcribe_with_cloudflare(audio_bytes)
-                if raw and not _is_hallucination(raw, transcription_prompt):
-                    text = raw
-                    segments = []
-                    stt_duration = 0.0
-                    provider_used = "cloudflare"
-            except HTTPException as e:
-                print(f"[STT] Cloudflare fallback error: {e.detail}", file=sys.stderr)
-            except Exception as e:
-                print(f"[STT] Cloudflare error: {e}", file=sys.stderr)
+        # ── Weighted round-robin across all configured providers ──
+        text, segments, stt_duration, provider_used = await _transcribe_roundrobin(
+            primary_path, normalized_language, transcription_prompt
+        )
 
         print(f"[STT] Result: provider={provider_used}, text_len={len(text)}, text={text[:80]}...", file=sys.stderr)
 
@@ -377,7 +576,7 @@ async def create_transcription(
         final_duration = stt_duration or client_duration or duration_from_wave
 
         metrics = analyze_speech_metrics(text, segments, final_duration)
-        return {"text": text, "metrics": metrics}
+        return {"text": text, "metrics": metrics, "provider": provider_used}
     except HTTPException:
         raise
     except Exception as e:
@@ -390,13 +589,16 @@ async def create_transcription(
             os.remove(wav_path)
 
 
+# ---------------------------------------------------------------------------
+# WebSocket streaming endpoint (also round-robin)
+# ---------------------------------------------------------------------------
+
 @router.websocket("/stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    groq_api_key = settings.groq_api_key
-    nvidia_api_key = settings.nvidia_api_key
-    
-    if not groq_api_key and not nvidia_api_key:
+
+    available = _get_available_providers()
+    if not available:
         await websocket.close(code=1011)
         return
 
@@ -417,19 +619,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 async with aiofiles.open(temp_path, "wb") as temp_file:
                     await temp_file.write(data)
 
-                text = ""
-                segments = []
-                stt_duration = 0.0
                 prompt = "Đây là câu nói tiếng Việt."
 
-                if not _looks_invalid_key(groq_api_key):
-                    text, segments, stt_duration = await _transcribe_with_groq(temp_path, "vi", prompt)
-
-                if not text and not _looks_invalid_key(nvidia_api_key):
-                    text, segments, stt_duration = await _transcribe_with_nvidia(temp_path, "vi", prompt)
+                # Use the same weighted round-robin for WebSocket streaming
+                text, segments, stt_duration, provider = await _transcribe_roundrobin(
+                    temp_path, "vi", prompt
+                )
 
                 if text and not _is_hallucination(text, prompt):
-                    await websocket.send_json({"text": text})
+                    await websocket.send_json({"text": text, "provider": provider})
             except Exception as e:
                 print(f"[WS-STT] Error: {e}", file=sys.stderr)
                 await websocket.send_json({"error": str(e)})

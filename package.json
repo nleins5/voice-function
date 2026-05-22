@@ -1,7 +1,7 @@
 {
-  "name": "free-ai-gateway",
+  "name": "voice-function",
   "version": "2.0.0",
-  "description": "Free AI Gateway - Multi-provider AI routing with failover",
+  "description": "Voice coaching & speech-to-text platform with multi-provider STT routing",
   "scripts": {
     "dev": "uvicorn app.main:app --reload",
     "dev:voice": "DISABLE_DATABASE=1 GATEWAY_SECRET= REQUEST_TIMEOUT_S=8 MAX_RETRIES_PER_PROVIDER=0 ROUTING_MODE=chain uvicorn app.main:app --host 0.0.0.0 --port 8000",
