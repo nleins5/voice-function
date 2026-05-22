@@ -291,8 +291,8 @@ async def _transcribe_with_deepgram(temp_path: str, language: str) -> tuple[str,
         lang_code = "en" if language.startswith("en") else "vi"
         url = f"https://api.deepgram.com/v1/listen?model=nova-2&language={lang_code}&smart_format=true&utterances=true"
 
-        async with aiofiles.open(temp_path, "rb") as f:
-            audio_bytes = await f.read()
+        with open(temp_path, "rb") as f:
+            audio_bytes = f.read()
 
         # Detect content type from file extension
         ext = os.path.splitext(temp_path)[1].lower()
@@ -411,8 +411,8 @@ async def _transcribe_roundrobin(
                 text, segments, duration = await _transcribe_with_openai(temp_path, language, prompt)
             elif provider == "cloudflare":
                 if audio_bytes is None:
-                    async with aiofiles.open(temp_path, "rb") as f:
-                        audio_bytes = await f.read()
+                    with open(temp_path, "rb") as f:
+                        audio_bytes = f.read()
                 raw = await _transcribe_with_cloudflare(audio_bytes)
                 if raw:
                     text = raw
@@ -463,8 +463,8 @@ async def test_audio_providers():
                 data = struct.pack("<h", val)
                 wav_file.writeframesraw(data)
                 
-        async with aiofiles.open(temp_path, "rb") as f:
-            audio_bytes = await f.read()
+        with open(temp_path, "rb") as f:
+            audio_bytes = f.read()
 
         available = _get_available_providers()
         weights = _parse_stt_weights()
@@ -532,10 +532,10 @@ async def create_transcription(
         os.close(fd)
 
         file_size = 0
-        async with aiofiles.open(temp_path, "wb") as temp_file:
+        with open(temp_path, "wb") as temp_file:
             while chunk := await file.read(8192):
                 file_size += len(chunk)
-                await temp_file.write(chunk)
+                temp_file.write(chunk)
 
         print(f"[STT] Received audio: {file.filename}, size={file_size}, suffix={suffix}", file=sys.stderr)
 
@@ -616,8 +616,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 fd, temp_path = tempfile.mkstemp(suffix=suffix)
                 os.close(fd)
 
-                async with aiofiles.open(temp_path, "wb") as temp_file:
-                    await temp_file.write(data)
+                with open(temp_path, "wb") as temp_file:
+                    temp_file.write(data)
 
                 prompt = "Đây là câu nói tiếng Việt."
 
