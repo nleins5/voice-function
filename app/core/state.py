@@ -3,7 +3,7 @@ import datetime
 from typing import Any, Dict
 from app.config import (
     PROVIDER_FAILURE_THRESHOLD, PROVIDER_COOLDOWN_S, ADAPTIVE_ROUTING,
-    ADAPTIVE_LATENCY_ALPHA, ADAPTIVE_ERROR_PENALTY, COST_PER_1M
+    ADAPTIVE_LATENCY_ALPHA, ADAPTIVE_ERROR_PENALTY
 )
 
 class StateStore:
@@ -102,13 +102,9 @@ class StateStore:
         if ewma_latency <= 0:
             latency_multiplier = 1.0
         else:
-            # Dampened latency bonus — use sqrt to flatten the curve.
-            # Fast providers still get a boost but won't monopolize traffic.
-            # Cap at 1.5x (was 2.0x) so a 200ms provider only gets 1.5x, not 4x.
             raw = 600.0 / ewma_latency
             latency_multiplier = max(0.4, min(1.5, raw ** 0.5))
 
-        # Penalize providers with many inflight requests (load spreading)
         inflight = int(state.get("inflight", 0))
         inflight_penalty = max(0.5, 1.0 - (inflight * 0.15))
 
@@ -121,18 +117,13 @@ class StateStore:
                 "requests": 0, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0
             }
         
-        rates = COST_PER_1M.get(provider_key, (0.0, 0.0))
-        cost_usd = (tokens_in * rates[0] + tokens_out * rates[1]) / 1_000_000
-        
         u = self.daily_usage[provider_key]
         u["requests"] += 1
         u["tokens_in"] += tokens_in
         u["tokens_out"] += tokens_out
-        u["cost_usd"] += cost_usd
 
     def get_total_cost(self) -> float:
-        self._ensure_daily_reset()
-        return sum(u.get("cost_usd", 0.0) for u in self.daily_usage.values())
+        return 0.0
 
     def increment_rr(self) -> int:
         res = self.rr_counter
@@ -152,16 +143,12 @@ class StateStore:
         self.user_usage[user_id] = self.get_user_prompts(user_id) + 1
 
     def _ensure_user_reset(self) -> None:
-        """Reset user prompt counters daily so free-tier limits reset at midnight UTC."""
         today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         if not hasattr(self, '_user_usage_date') or today != self._user_usage_date:
             self.user_usage.clear()
             self._user_usage_date = today
 
-    # ── Telemetry methods used by admin API ──────────────────────
-
     def get_all_states(self) -> Dict[str, Any]:
-        """Return a snapshot of all provider states + daily usage."""
         self._ensure_daily_reset()
         return {
             "providers": {
@@ -170,5 +157,5 @@ class StateStore:
             },
             "daily_usage": dict(self.daily_usage),
             "daily_usage_date": self.daily_usage_date,
-            "total_cost_usd": round(self.get_total_cost(), 6),
+            "total_cost_usd": 0.0,
         }
