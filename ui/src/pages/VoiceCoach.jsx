@@ -507,7 +507,9 @@ export default function VoiceCoach() {
 
                 {(feedback.ideal_rewritten_answer || feedback.natural_rewritten_answer) && (
                     <div className="rounded-lg border border-[#e2e8f0] bg-[#f8f9fa] p-5 shadow-sm">
-                        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#334155]">Ideal Rewritten Answer</h3>
+                        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-[#334155]">
+                            {feedback.natural_rewritten_answer ? 'Câu trả lời mẫu bản xứ (Native)' : 'Câu trả lời mẫu (Lý tưởng)'}
+                        </h3>
                         <p className="font-serif text-[15px] italic leading-relaxed text-[#1e293b]">"{feedback.ideal_rewritten_answer || feedback.natural_rewritten_answer}"</p>
                     </div>
                 )}
