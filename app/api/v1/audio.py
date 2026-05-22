@@ -82,8 +82,11 @@ WHISPER_HALLUCINATIONS = {
     "Cảm ơn các bạn đã xem.",
     "Hẹn gặp lại.",
     "you", "You",
+    "Hãy subscribe cho kênh",
+    "Đăng ký kênh",
+    "La La La School",
+    "Chào các bạn",
 }
-
 
 def _is_hallucination(text: str, prompt: str) -> bool:
     """Check if transcription is a known Whisper hallucination."""
@@ -94,14 +97,26 @@ def _is_hallucination(text: str, prompt: str) -> bool:
         return True
     if text.strip() == prompt.strip():
         return True
+    # Catch sub/channel variants dynamically
+    low = text.lower()
+    if "subscribe" in low and "kênh" in low:
+        return True
+    if "cảm ơn các bạn đã xem" in low:
+        return True
     # Extremely short single-char or just punctuation
     if len(stripped) <= 1:
         return True
     return False
 
+def _has_ffmpeg() -> bool:
+    import shutil
+    return shutil.which("ffmpeg") is not None
 
 def _convert_to_wav(input_path: str) -> str:
     """Convert audio to WAV using ffmpeg if available, for better Whisper compatibility."""
+    if not _has_ffmpeg():
+        return ""
+        
     wav_path = input_path.rsplit(".", 1)[0] + ".wav"
     try:
         result = subprocess.run(
@@ -387,18 +402,20 @@ async def _transcribe_roundrobin(
     prompt: str,
     audio_bytes: bytes | None = None,
 ) -> tuple[str, list, float, str]:
-    """Try providers in weighted-random order, return (text, segments, duration, provider_used).
-
-    This distributes load across all configured providers instead of
-    always hammering Groq first.
-    """
     order = _pick_provider_order()
     print(f"[STT] Provider order for this request: {order}", file=sys.stderr)
+
+    is_webm = temp_path.endswith(".webm")
 
     for provider in order:
         text = ""
         segments: list = []
         duration = 0.0
+
+        # Skip providers that don't natively support WebM if we couldn't convert it
+        if is_webm and provider in {"nvidia", "cloudflare"}:
+            print(f"[STT] Skipping {provider} because file is WebM and no ffmpeg", file=sys.stderr)
+            continue
 
         try:
             if provider == "groq":
