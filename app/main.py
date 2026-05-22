@@ -78,10 +78,12 @@ async def add_request_timing(request: Request, call_next):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     logger.error(f"Unhandled error on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal Server Error. Please try again later."}
+        content={"detail": f"Internal Server Error: {str(exc)}"}
     )
 
 # Serve UI
