@@ -4,7 +4,6 @@ import os
 import sys
 import tempfile
 import subprocess
-import aiofiles
 import httpx
 import wave
 import re
